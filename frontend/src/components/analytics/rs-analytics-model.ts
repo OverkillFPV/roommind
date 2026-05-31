@@ -155,19 +155,23 @@ export class RsAnalyticsModel extends LitElement {
             ${canHeat && m?.w_per_deg_hr_heat
               ? stat(
                   "heating_efficiency",
-                  m.w_per_deg_hr_heat.toFixed(0) + " W/" + tempUnit(this.hass) + "/h",
-                  "analytics.heating_efficiency",
+                  toDisplayDelta(1000 / m.w_per_deg_hr_heat, this.hass).toFixed(1) +
+                    tempUnit(this.hass) +
+                    "/h/kW",
+                  "analytics.heating_gain",
                   "",
-                  "analytics.info.heating_efficiency",
+                  "analytics.info.heating_gain",
                 )
               : nothing}
             ${canCool && m?.w_per_deg_hr_cool
               ? stat(
                   "cooling_efficiency",
-                  m.w_per_deg_hr_cool.toFixed(0) + " W/" + tempUnit(this.hass) + "/h",
-                  "analytics.cooling_efficiency",
+                  toDisplayDelta(1000 / m.w_per_deg_hr_cool, this.hass).toFixed(1) +
+                    tempUnit(this.hass) +
+                    "/h/kW",
+                  "analytics.cooling_gain",
                   "",
-                  "analytics.info.cooling_efficiency",
+                  "analytics.info.cooling_gain",
                 )
               : nothing}
             ${m?.has_aux_heat_sensors && model && model.Q_aux && model.Q_aux > 1e-6
