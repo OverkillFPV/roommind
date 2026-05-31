@@ -12,6 +12,7 @@ export class RsPowerSection extends LitElement {
   @property({ attribute: false }) public hass!: HomeAssistant;
   @property({ attribute: false }) public auxHeatSensors: Set<string> = new Set();
   @property({ attribute: false }) public climatePowerSensors: Set<string> = new Set();
+  @property({ type: Number }) public climateIdlePowerW = 5;
   @property({ type: Boolean }) public editing = false;
   @property() public language = "en";
 
@@ -173,6 +174,17 @@ export class RsPowerSection extends LitElement {
       .section-subtitle:first-child {
         margin-top: 0;
       }
+
+      .threshold-row {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .threshold-row ha-textfield {
+        max-width: 200px;
+      }
     `,
   ];
 
@@ -237,6 +249,22 @@ export class RsPowerSection extends LitElement {
         </div>
         <div class="block-hint">${localize("power.climate_power_hint", lang)}</div>
         ${this._renderList("climate_power", this.climatePowerSensors)}
+        ${this.climatePowerSensors.size > 0
+          ? html`
+              <div class="threshold-row">
+                <ha-textfield
+                  type="number"
+                  min="0"
+                  step="1"
+                  suffix="W"
+                  .label=${localize("power.idle_threshold", lang)}
+                  .value=${String(this.climateIdlePowerW)}
+                  @change=${this._onThresholdChange}
+                ></ha-textfield>
+                <div class="block-hint">${localize("power.idle_threshold_hint", lang)}</div>
+              </div>
+            `
+          : nothing}
       </div>
     `;
   }
@@ -334,6 +362,19 @@ export class RsPowerSection extends LitElement {
     next.delete(entityId);
     this._fire(kind, [...next]);
   }
+
+  private _onThresholdChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    const raw = parseFloat(target.value);
+    const value = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+    this.dispatchEvent(
+      new CustomEvent("power-changed", {
+        detail: { key: "climate_idle_power_w", value },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  };
 
   private _fire(kind: PowerKind, value: string[]) {
     const key = kind === "aux_heat" ? "aux_heat_sensors" : "climate_power_sensors";

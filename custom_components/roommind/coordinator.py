@@ -896,6 +896,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             q_occupancy=q_occupancy,
             q_aux=q_aux,
             climate_power_w=climate_power_w,
+            climate_idle_power_w=self._room_climate_idle_threshold(room),
             has_external_sensor=has_external_sensor,
             heat_source_plan=heat_source_plan,
             climate_active=climate_active,
@@ -949,6 +950,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         q_occupancy: float,
         q_aux: float,
         climate_power_w: float | None,
+        climate_idle_power_w: float | None,
         has_external_sensor: bool,
         heat_source_plan: Any | None,
         climate_active: bool,
@@ -1076,6 +1078,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 q_occupancy=q_occupancy,
                 q_aux=q_aux,
                 climate_power_w=climate_power_w,
+                climate_idle_power_w=climate_idle_power_w,
             )
         else:
             self._ekf_training.clear(area_id)
@@ -1349,9 +1352,25 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 val = float(st.state)
             except (TypeError, ValueError):
                 continue
+            unit = st.attributes.get("unit_of_measurement")
+            if isinstance(unit, str) and unit.lower() == "kw":
+                val *= 1000.0
             if val > 0:
                 total += val
         return total
+
+    def _room_climate_idle_threshold(self, room: dict) -> float | None:
+        """Per-room threshold (W) below which climate draw counts as standby."""
+        raw = room.get("climate_idle_power_w")
+        if raw is None:
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if v < 0:
+            return 0.0
+        return v
 
     def _devices_lack_hvac_action(self, room: dict) -> bool:
         """Return True if at least one active device lacks hvac_action.

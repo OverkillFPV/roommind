@@ -995,7 +995,7 @@ class ThermalEKF:
 
     # -- climate-unit rated-power auto-learning -----------------------------
 
-    def observe_climate_power(self, power_w: float, mode: str) -> None:
+    def observe_climate_power(self, power_w: float, mode: str, idle_threshold: float | None = None) -> None:
         """Track the maximum observed climate-unit power draw per mode.
 
         The peak is the rated power estimate, used by callers to convert a
@@ -1003,7 +1003,12 @@ class ThermalEKF:
         drift downward if the device's max usable power changes
         (e.g. unit replacement, scale calibration).
         """
-        if power_w is None or not math.isfinite(power_w) or power_w < self._CLIMATE_POWER_NOISE_W:
+        threshold = (
+            idle_threshold
+            if idle_threshold is not None and math.isfinite(idle_threshold) and idle_threshold >= 0.0
+            else self._CLIMATE_POWER_NOISE_W
+        )
+        if power_w is None or not math.isfinite(power_w) or power_w < threshold:
             return
         if mode == "heating":
             self._rated_p_heat = max(self._rated_p_heat * self._CLIMATE_POWER_PEAK_DECAY, power_w)
@@ -1109,6 +1114,7 @@ class RoomModelManager:
         q_occupancy: float = 0.0,
         q_aux: float = 0.0,
         climate_power_w: float | None = None,
+        climate_idle_power_w: float | None = None,
     ) -> None:
         """Feed an observed transition to the room's estimator.
 
@@ -1124,14 +1130,25 @@ class RoomModelManager:
         effective_mode = mode
         effective_pf = power_fraction
         if climate_power_w is not None and math.isfinite(climate_power_w) and mode in ("heating", "cooling"):
-            est.observe_climate_power(climate_power_w, mode)
+            idle_thr = (
+                climate_idle_power_w
+                if climate_idle_power_w is not None
+                and math.isfinite(climate_idle_power_w)
+                and climate_idle_power_w >= 0.0
+                else est._CLIMATE_POWER_NOISE_W
+            )
+            est.observe_climate_power(climate_power_w, mode, idle_threshold=idle_thr)
             rated = est.get_rated_climate_power(mode)
-            if climate_power_w < est._CLIMATE_POWER_NOISE_W:
+            if climate_power_w < idle_thr:
                 # Climate unit isn't actually running — don't attribute heat
                 effective_mode = "idle"
                 effective_pf = 0.0
             elif rated > 0.0:
-                effective_pf = max(0.0, min(1.0, climate_power_w / rated))
+                # Subtract standby so the power_fraction reflects the
+                # *active* portion of the draw.
+                active_w = max(0.0, climate_power_w - idle_thr)
+                active_rated = max(rated - idle_thr, 1.0)
+                effective_pf = max(0.0, min(1.0, active_w / active_rated))
 
         est.update(
             T_new,

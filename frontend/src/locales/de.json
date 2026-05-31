@@ -177,6 +177,8 @@
   "power.aux_heat_hint": "Leistungssensoren (W) für ohmsche Heizgeräte, deren Energie vollständig zu Raumwärme wird (z. B. Elektroheizer, Handtuchwärmer). Werden summiert.",
   "power.climate_power_hint": "Leistungssensoren (W) für Wärmepumpe / AC-Kompressor. Misst die tatsächliche Last und lernt die Nennleistung automatisch.",
   "power.empty": "Keine Sensoren ausgewählt.",
+  "power.idle_threshold": "Standby-Schwelle",
+  "power.idle_threshold_hint": "Leistungsaufnahme unter diesem Wert (W) gilt als Standby — die Wärme wird nicht dem Klimagerät zugeschrieben und der Wert wird vor der Lastberechnung abgezogen.",
   "devices.done": "Fertig",
   "devices.other_area": "Anderer Bereich",
   "devices.type_thermostat": "Thermostat",

@@ -177,6 +177,8 @@
   "power.aux_heat_hint": "Power-draw sensors (W) for resistive heaters whose energy fully becomes room heat (e.g. electric heater, towel rail). Summed.",
   "power.climate_power_hint": "Power-draw sensors (W) for the heat pump / AC compressor. Used to measure actual load and auto-learn rated power.",
   "power.empty": "No sensors selected.",
+  "power.idle_threshold": "Idle / standby threshold",
+  "power.idle_threshold_hint": "Power draw below this value (W) is treated as standby — heat is not attributed to the climate unit and the value is subtracted before computing the load fraction.",
   "devices.done": "Done",
   "devices.other_area": "Other area",
   "devices.type_thermostat": "Thermostat",

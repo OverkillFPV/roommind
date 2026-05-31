@@ -41,6 +41,7 @@ class EkfTrainingManager:
         q_residual: float = 0.0,
         shading_factor: float = 1.0,
         q_occupancy: float = 0.0,
+        climate_idle_power_w: float | None = None,
     ) -> None:
         """Flush accumulated EKF update (on mode change or window open)."""
         accumulated = self._accumulated_dt.pop(area_id, 0.0)
@@ -64,6 +65,7 @@ class EkfTrainingManager:
                 q_occupancy=q_occupancy,
                 q_aux=q_aux,
                 climate_power_w=climate_w if had_climate_w else None,
+                climate_idle_power_w=climate_idle_power_w,
             )
 
     def process(
@@ -84,6 +86,7 @@ class EkfTrainingManager:
         q_occupancy: float = 0.0,
         q_aux: float = 0.0,
         climate_power_w: float | None = None,
+        climate_idle_power_w: float | None = None,
     ) -> None:
         """Process an EKF training step for a room.
 
@@ -101,6 +104,7 @@ class EkfTrainingManager:
                 q_residual=q_residual,
                 shading_factor=shading_factor,
                 q_occupancy=q_occupancy,
+                climate_idle_power_w=climate_idle_power_w,
             )
             self._accumulated_dt.pop(area_id, None)
             self._accumulated_mode.pop(area_id, None)
@@ -129,6 +133,7 @@ class EkfTrainingManager:
                 q_residual=q_residual,
                 shading_factor=shading_factor,
                 q_occupancy=q_occupancy,
+                climate_idle_power_w=climate_idle_power_w,
             )
             self._accumulated_dt.pop(area_id, None)
             self._accumulated_mode.pop(area_id, None)
@@ -149,6 +154,7 @@ class EkfTrainingManager:
                     q_residual=q_residual,
                     shading_factor=shading_factor,
                     q_occupancy=q_occupancy,
+                    climate_idle_power_w=climate_idle_power_w,
                 )
 
             old_dt = self._accumulated_dt.get(area_id, 0.0)
@@ -186,6 +192,7 @@ class EkfTrainingManager:
                     q_occupancy=q_occupancy,
                     q_aux=qa,
                     climate_power_w=cw if had_cw else None,
+                    climate_idle_power_w=climate_idle_power_w,
                 )
                 self._accumulated_dt[area_id] = 0.0
 

@@ -62,6 +62,7 @@ export class RsRoomDetail extends LitElement {
   @state() private _selectedWindowSensors: Set<string> = new Set();
   @state() private _selectedAuxHeatSensors: Set<string> = new Set();
   @state() private _selectedClimatePowerSensors: Set<string> = new Set();
+  @state() private _climateIdlePowerW = 5;
   @state() private _windowOpenDelay = 0;
   @state() private _windowCloseDelay = 0;
   @state() private _climateMode: ClimateMode = "auto";
@@ -261,6 +262,7 @@ export class RsRoomDetail extends LitElement {
       this._selectedWindowSensors = new Set(this.config.window_sensors ?? []);
       this._selectedAuxHeatSensors = new Set(this.config.aux_heat_sensors ?? []);
       this._selectedClimatePowerSensors = new Set(this.config.climate_power_sensors ?? []);
+      this._climateIdlePowerW = this.config.climate_idle_power_w ?? 5;
       this._windowOpenDelay = this.config.window_open_delay ?? 0;
       this._windowCloseDelay = this.config.window_close_delay ?? 0;
       this._climateMode = this.config.climate_mode;
@@ -303,6 +305,7 @@ export class RsRoomDetail extends LitElement {
       this._selectedWindowSensors = new Set();
       this._selectedAuxHeatSensors = new Set();
       this._selectedClimatePowerSensors = new Set();
+      this._climateIdlePowerW = 5;
       this._windowOpenDelay = 0;
       this._windowCloseDelay = 0;
       this._climateMode = "auto";
@@ -520,6 +523,7 @@ export class RsRoomDetail extends LitElement {
                     .editing=${false}
                     .auxHeatSensors=${this._selectedAuxHeatSensors}
                     .climatePowerSensors=${this._selectedClimatePowerSensors}
+                    .climateIdlePowerW=${this._climateIdlePowerW}
                     .language=${this.hass.language}
                     @power-changed=${this._onPowerChanged}
                   ></rs-power-section>
@@ -775,6 +779,7 @@ export class RsRoomDetail extends LitElement {
             .editing=${true}
             .auxHeatSensors=${this._selectedAuxHeatSensors}
             .climatePowerSensors=${this._selectedClimatePowerSensors}
+            .climateIdlePowerW=${this._climateIdlePowerW}
             .language=${this.hass.language}
             @power-changed=${this._onPowerChanged}
           ></rs-power-section>
@@ -978,12 +983,14 @@ export class RsRoomDetail extends LitElement {
     this._autoSave();
   }
 
-  private _onPowerChanged(e: CustomEvent<{ key: string; value: string[] }>) {
+  private _onPowerChanged(e: CustomEvent<{ key: string; value: string[] | number }>) {
     const { key, value } = e.detail;
     if (key === "aux_heat_sensors") {
-      this._selectedAuxHeatSensors = new Set(value);
+      this._selectedAuxHeatSensors = new Set(value as string[]);
     } else if (key === "climate_power_sensors") {
-      this._selectedClimatePowerSensors = new Set(value);
+      this._selectedClimatePowerSensors = new Set(value as string[]);
+    } else if (key === "climate_idle_power_w") {
+      this._climateIdlePowerW = value as number;
     }
     this._autoSave();
   }
@@ -1112,6 +1119,7 @@ export class RsRoomDetail extends LitElement {
         window_sensors: [...this._selectedWindowSensors],
         aux_heat_sensors: [...this._selectedAuxHeatSensors],
         climate_power_sensors: [...this._selectedClimatePowerSensors],
+        climate_idle_power_w: this._climateIdlePowerW,
         window_open_delay: this._windowOpenDelay,
         window_close_delay: this._windowCloseDelay,
         climate_mode: this._climateMode,
