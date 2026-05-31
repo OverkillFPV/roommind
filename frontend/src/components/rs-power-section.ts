@@ -1,6 +1,6 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { HomeAssistant } from "../types";
+import type { HomeAssistant, RoomLiveData } from "../types";
 import { localize } from "../utils/localize";
 import { openEntityInfo } from "../utils/events";
 import { inputStyles } from "../styles/input-styles";
@@ -12,6 +12,7 @@ export class RsPowerSection extends LitElement {
   @property({ attribute: false }) public hass!: HomeAssistant;
   @property({ attribute: false }) public auxHeatSensors: Set<string> = new Set();
   @property({ attribute: false }) public climatePowerSensors: Set<string> = new Set();
+  @property({ attribute: false }) public live: RoomLiveData | null = null;
   @property({ type: Number }) public climateIdlePowerW = 5;
   @property({ type: Boolean }) public editing = false;
   @property() public language = "en";
@@ -185,6 +186,27 @@ export class RsPowerSection extends LitElement {
       .threshold-row ha-textfield {
         max-width: 200px;
       }
+
+      .stats-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 2px 0 6px 0;
+      }
+      .stat-chip {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--primary-text-color);
+      }
+      .stat-label {
+        color: var(--secondary-text-color);
+        margin-right: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
     `,
   ];
 
@@ -204,15 +226,41 @@ export class RsPowerSection extends LitElement {
       ${hasAux
         ? html`
             <div class="section-subtitle">${localize("power.aux_heat_sensors", lang)}</div>
+            ${this._renderStatsLine("aux")}
             ${[...this.auxHeatSensors].map((id) => this._renderViewRow(id))}
           `
         : nothing}
       ${hasClimate
         ? html`
             <div class="section-subtitle">${localize("power.climate_power_sensors", lang)}</div>
+            ${this._renderStatsLine("climate")}
             ${[...this.climatePowerSensors].map((id) => this._renderViewRow(id))}
           `
         : nothing}
+    `;
+  }
+
+  private _renderStatsLine(kind: "aux" | "climate") {
+    if (!this.live) return nothing;
+    const lang = this.hass.language;
+    const live =
+      kind === "aux" ? (this.live.aux_power_w ?? 0) : (this.live.climate_power_w ?? 0);
+    const avg =
+      kind === "aux" ? (this.live.aux_power_avg_w ?? 0) : (this.live.climate_power_avg_w ?? 0);
+    const max =
+      kind === "aux" ? (this.live.aux_power_max_w ?? 0) : (this.live.climate_power_max_w ?? 0);
+    return html`
+      <div class="stats-line">
+        <span class="stat-chip"
+          ><span class="stat-label">${localize("power.live", lang)}</span>${live.toFixed(0)} W</span
+        >
+        <span class="stat-chip"
+          ><span class="stat-label">${localize("power.avg", lang)}</span>${avg.toFixed(0)} W</span
+        >
+        <span class="stat-chip"
+          ><span class="stat-label">${localize("power.max", lang)}</span>${max.toFixed(0)} W</span
+        >
+      </div>
     `;
   }
 

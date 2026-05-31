@@ -524,6 +524,7 @@ export class RsRoomDetail extends LitElement {
                     .auxHeatSensors=${this._selectedAuxHeatSensors}
                     .climatePowerSensors=${this._selectedClimatePowerSensors}
                     .climateIdlePowerW=${this._climateIdlePowerW}
+                    .live=${this.config?.live ?? null}
                     .language=${this.hass.language}
                     @power-changed=${this._onPowerChanged}
                   ></rs-power-section>

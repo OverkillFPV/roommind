@@ -52,6 +52,14 @@ export interface RoomLiveData {
   active_cover_schedule_index: number;
   active_heat_sources: string | null;
   learning_paused_reason: "outdoor_unavailable" | null;
+  aux_power_w?: number;
+  aux_power_avg_w?: number;
+  aux_power_max_w?: number;
+  climate_power_w?: number | null;
+  climate_power_avg_w?: number;
+  climate_power_max_w?: number;
+  climate_active_power?: boolean;
+  climate_idle_power_w?: number | null;
 }
 
 export type DeviceType = "trv" | "ac";
@@ -256,6 +264,7 @@ export interface AnalyticsData {
       Q_cool: number;
       Q_solar: number;
       Q_occupancy: number;
+      Q_aux?: number;
     };
     n_samples: number;
     n_observations: number;
@@ -267,6 +276,13 @@ export interface AnalyticsData {
     prediction_std_idle: number;
     prediction_std_heating: number;
     has_occupancy_sensors: boolean;
+    rated_p_heat_w?: number | null;
+    rated_p_cool_w?: number | null;
+    w_per_deg_hr_heat?: number | null;
+    w_per_deg_hr_cool?: number | null;
+    w_per_deg_hr_aux?: number | null;
+    has_aux_heat_sensors?: boolean;
+    has_climate_power_sensors?: boolean;
   };
 }
 

@@ -207,6 +207,29 @@ export class RsAreaCard extends LitElement {
         background: rgba(158, 158, 158, 0.1);
       }
 
+      .power-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px 2px 6px;
+        border-radius: 10px;
+        --mdc-icon-size: 14px;
+      }
+      .power-badge.climate-on {
+        color: var(--primary-color, #03a9f4);
+        background: rgba(3, 169, 244, 0.14);
+      }
+      .power-badge.climate-idle {
+        color: var(--secondary-text-color);
+        background: rgba(158, 158, 158, 0.1);
+      }
+      .power-badge.aux-on {
+        color: #ff7043;
+        background: rgba(255, 112, 67, 0.14);
+      }
+
       .mold-badge {
         display: inline-flex;
         align-items: center;
@@ -501,6 +524,23 @@ export class RsAreaCard extends LitElement {
                 ${live.mpc_active
                   ? localize("card.mpc_active", this.hass.language)
                   : localize("card.mpc_learning", this.hass.language)}
+              </span>`
+            : nothing}
+          ${live.climate_active_power
+            ? html`<span class="power-badge climate-on">
+                <ha-icon icon="mdi:hvac"></ha-icon>
+                ${live.climate_power_w != null ? `${live.climate_power_w.toFixed(0)} W` : ""}
+              </span>`
+            : live.climate_power_w != null
+              ? html`<span class="power-badge climate-idle">
+                  <ha-icon icon="mdi:hvac-off"></ha-icon>
+                  ${live.climate_power_w.toFixed(0)} W
+                </span>`
+              : nothing}
+          ${live.aux_power_w != null && live.aux_power_w > 0
+            ? html`<span class="power-badge aux-on">
+                <ha-icon icon="mdi:radiator"></ha-icon>
+                ${live.aux_power_w.toFixed(0)} W
               </span>`
             : nothing}
         </span>

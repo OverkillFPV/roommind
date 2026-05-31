@@ -236,6 +236,24 @@ async def build_analytics_data(
             # EKF uncertainty: sqrt(P[0][0]) as proxy for sigma_e
             sigma_proxy = math.sqrt(max(est._P[0][0], 0.0))
             has_occupancy_sensors = len(room_config.get("occupancy_sensors", [])) > 0
+            # Climate W per °/hr efficiency:
+            # Q_heat / Q_cool are stored as °C/hr at rated power; dividing the
+            # learned rated wattage by them gives W per °C/hr.
+            rated_p_heat = float(getattr(est, "_rated_p_heat", 0.0) or 0.0)
+            rated_p_cool = float(getattr(est, "_rated_p_cool", 0.0) or 0.0)
+            climate_idle_w = float(room_config.get("climate_idle_power_w", 0.0) or 0.0)
+            active_rated_heat = max(rated_p_heat - climate_idle_w, 0.0)
+            active_rated_cool = max(rated_p_cool - climate_idle_w, 0.0)
+            w_per_deg_hr_heat: float | None = None
+            w_per_deg_hr_cool: float | None = None
+            w_per_deg_hr_aux: float | None = None
+            if active_rated_heat > 0.0 and rc.Q_heat > 0.0:
+                w_per_deg_hr_heat = active_rated_heat / rc.Q_heat
+            if active_rated_cool > 0.0 and abs(rc.Q_cool) > 0.0:
+                w_per_deg_hr_cool = active_rated_cool / abs(rc.Q_cool)
+            # Q_aux is °C/hr per W → inverse is W per °C/hr.
+            if rc.Q_aux > 1e-9:
+                w_per_deg_hr_aux = 1.0 / rc.Q_aux
             model_info = {
                 "confidence": est.confidence,
                 "model": rc.to_dict(),
@@ -249,6 +267,13 @@ async def build_analytics_data(
                 "prediction_std_idle": round(pred_std_idle, 4),
                 "prediction_std_heating": round(pred_std_heat, 4),
                 "has_occupancy_sensors": has_occupancy_sensors,
+                "rated_p_heat_w": round(rated_p_heat, 1) if rated_p_heat > 0 else None,
+                "rated_p_cool_w": round(rated_p_cool, 1) if rated_p_cool > 0 else None,
+                "w_per_deg_hr_heat": (round(w_per_deg_hr_heat, 1) if w_per_deg_hr_heat else None),
+                "w_per_deg_hr_cool": (round(w_per_deg_hr_cool, 1) if w_per_deg_hr_cool else None),
+                "w_per_deg_hr_aux": (round(w_per_deg_hr_aux, 1) if w_per_deg_hr_aux else None),
+                "has_aux_heat_sensors": len(room_config.get("aux_heat_sensors", [])) > 0,
+                "has_climate_power_sensors": len(room_config.get("climate_power_sensors", [])) > 0,
             }
 
     # Build merged forecast: same format as history points, on a shared 5-min grid

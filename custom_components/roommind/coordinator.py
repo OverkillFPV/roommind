@@ -116,6 +116,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         self._previous_modes: dict[str, str] = {}
         self._model_manager: RoomModelManager = RoomModelManager()
         self._model_loaded = False
+        # Per-area rolling power stats: {area_id: {aux_avg, aux_max, climate_avg, climate_max}}
+        self._power_stats: dict[str, dict[str, float]] = {}
         self._thermal_save_count: int = 0
         self._history_store: HistoryStore | None = None
         self._history_write_count: int = 0
@@ -625,6 +627,10 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         else:
             climate_power_w = None
 
+        # Update rolling power stats (EMA avg + observed max) for UI display.
+        idle_thr = self._room_climate_idle_threshold(room) or 0.0
+        self._update_power_stats(area_id, q_aux, climate_power_w, idle_thr)
+
         # Determine and apply mode with MPC controller
         controller = MPCController(
             self.hass,
@@ -932,6 +938,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             cover_eids=cover_eids,
             cover_result=cover_result,
             mpc_active=mpc_active,
+            aux_power_w=q_aux,
+            climate_power_w=climate_power_w,
         )
 
     async def _observe_and_train(
@@ -1148,6 +1156,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         cover_eids: list[str],
         cover_result: CoverResult,
         mpc_active: bool,
+        aux_power_w: float,
+        climate_power_w: float | None,
     ) -> dict:
         """Build the final room state dictionary."""
         _room_devices = room.get("devices", [])
@@ -1210,6 +1220,19 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             "cover_forced_reason": (cover_result.forced_reason if cover_eids else ""),
             "active_cover_schedule_index": (cover_result.active_cover_schedule_index if cover_eids else -1),
             "active_heat_sources": self._heat_source_states.get(area_id),
+            "aux_power_w": round(aux_power_w, 1) if aux_power_w > 0 else 0.0,
+            "aux_power_avg_w": round(self._power_stats.get(area_id, {}).get("aux_avg", 0.0), 1),
+            "aux_power_max_w": round(self._power_stats.get(area_id, {}).get("aux_max", 0.0), 1),
+            "climate_power_w": (round(climate_power_w, 1) if climate_power_w is not None else None),
+            "climate_power_avg_w": round(self._power_stats.get(area_id, {}).get("climate_avg", 0.0), 1),
+            "climate_power_max_w": round(self._power_stats.get(area_id, {}).get("climate_max", 0.0), 1),
+            "climate_active_power": (
+                bool(
+                    climate_power_w is not None
+                    and climate_power_w >= (self._room_climate_idle_threshold(room) or 0.0)
+                )
+            ),
+            "climate_idle_power_w": self._room_climate_idle_threshold(room),
         }
 
     @staticmethod
@@ -1371,6 +1394,35 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         if v < 0:
             return 0.0
         return v
+
+    # EMA smoothing factor for power averages (~50-sample window).
+    _POWER_EMA_ALPHA: float = 0.02
+
+    def _update_power_stats(
+        self,
+        area_id: str,
+        aux_w: float,
+        climate_w: float | None,
+        climate_idle_threshold: float,
+    ) -> None:
+        """Update per-area rolling power statistics (EMA average + observed max)."""
+        stats = self._power_stats.setdefault(
+            area_id,
+            {
+                "aux_avg": 0.0,
+                "aux_max": 0.0,
+                "climate_avg": 0.0,
+                "climate_max": 0.0,
+            },
+        )
+        a = self._POWER_EMA_ALPHA
+        stats["aux_avg"] = stats["aux_avg"] * (1.0 - a) + aux_w * a
+        if aux_w > stats["aux_max"]:
+            stats["aux_max"] = aux_w
+        if climate_w is not None and climate_w >= climate_idle_threshold:
+            stats["climate_avg"] = stats["climate_avg"] * (1.0 - a) + climate_w * a
+            if climate_w > stats["climate_max"]:
+                stats["climate_max"] = climate_w
 
     def _devices_lack_hvac_action(self, room: dict) -> bool:
         """Return True if at least one active device lacks hvac_action.

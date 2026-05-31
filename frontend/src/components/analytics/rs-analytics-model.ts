@@ -152,6 +152,51 @@ export class RsAnalyticsModel extends LitElement {
                   "analytics.info.cooling_rate",
                 )
               : nothing}
+            ${canHeat && m?.w_per_deg_hr_heat
+              ? stat(
+                  "heating_efficiency",
+                  m.w_per_deg_hr_heat.toFixed(0) + " W/" + tempUnit(this.hass) + "/h",
+                  "analytics.heating_efficiency",
+                  "",
+                  "analytics.info.heating_efficiency",
+                )
+              : nothing}
+            ${canCool && m?.w_per_deg_hr_cool
+              ? stat(
+                  "cooling_efficiency",
+                  m.w_per_deg_hr_cool.toFixed(0) + " W/" + tempUnit(this.hass) + "/h",
+                  "analytics.cooling_efficiency",
+                  "",
+                  "analytics.info.cooling_efficiency",
+                )
+              : nothing}
+            ${m?.has_aux_heat_sensors && m?.w_per_deg_hr_aux
+              ? stat(
+                  "aux_efficiency",
+                  m.w_per_deg_hr_aux.toFixed(0) + " W/" + tempUnit(this.hass) + "/h",
+                  "analytics.aux_efficiency",
+                  "",
+                  "analytics.info.aux_efficiency",
+                )
+              : nothing}
+            ${m?.rated_p_heat_w
+              ? stat(
+                  "rated_p_heat",
+                  m.rated_p_heat_w.toFixed(0) + " W",
+                  "analytics.rated_p_heat",
+                  "",
+                  "analytics.info.rated_p_heat",
+                )
+              : nothing}
+            ${m?.rated_p_cool_w
+              ? stat(
+                  "rated_p_cool",
+                  m.rated_p_cool_w.toFixed(0) + " W",
+                  "analytics.rated_p_cool",
+                  "",
+                  "analytics.info.rated_p_cool",
+                )
+              : nothing}
             ${model && model.Q_solar > 0.1
               ? stat(
                   "solar_gain",
