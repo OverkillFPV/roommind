@@ -17,6 +17,7 @@ import "./rs-climate-mode-selector";
 import "./rs-schedule-settings";
 import "./rs-device-section";
 import "./rs-sensor-section";
+import "./rs-power-section";
 import "./rs-section-card";
 import "./rs-override-section";
 import "./rs-presence-section";
@@ -34,7 +35,14 @@ import type { RsOverrideSection } from "./rs-override-section";
 const CONTROL_DOCS_URL =
   "https://github.com/snazzybean/roommind/blob/main/docs/control-and-devices.md";
 
-type EditableSection = "schedule" | "devices" | "sensors" | "presence" | "covers" | "heatSource";
+type EditableSection =
+  | "schedule"
+  | "devices"
+  | "sensors"
+  | "power"
+  | "presence"
+  | "covers"
+  | "heatSource";
 
 @customElement("rs-room-detail")
 export class RsRoomDetail extends LitElement {
@@ -52,6 +60,8 @@ export class RsRoomDetail extends LitElement {
   @state() private _selectedHumiditySensor = "";
   @state() private _selectedOccupancySensors: Set<string> = new Set();
   @state() private _selectedWindowSensors: Set<string> = new Set();
+  @state() private _selectedAuxHeatSensors: Set<string> = new Set();
+  @state() private _selectedClimatePowerSensors: Set<string> = new Set();
   @state() private _windowOpenDelay = 0;
   @state() private _windowCloseDelay = 0;
   @state() private _climateMode: ClimateMode = "auto";
@@ -249,6 +259,8 @@ export class RsRoomDetail extends LitElement {
       this._selectedHumiditySensor = this.config.humidity_sensor ?? "";
       this._selectedOccupancySensors = new Set(this.config.occupancy_sensors ?? []);
       this._selectedWindowSensors = new Set(this.config.window_sensors ?? []);
+      this._selectedAuxHeatSensors = new Set(this.config.aux_heat_sensors ?? []);
+      this._selectedClimatePowerSensors = new Set(this.config.climate_power_sensors ?? []);
       this._windowOpenDelay = this.config.window_open_delay ?? 0;
       this._windowCloseDelay = this.config.window_close_delay ?? 0;
       this._climateMode = this.config.climate_mode;
@@ -289,6 +301,8 @@ export class RsRoomDetail extends LitElement {
       this._selectedHumiditySensor = "";
       this._selectedOccupancySensors = new Set();
       this._selectedWindowSensors = new Set();
+      this._selectedAuxHeatSensors = new Set();
+      this._selectedClimatePowerSensors = new Set();
       this._windowOpenDelay = 0;
       this._windowCloseDelay = 0;
       this._climateMode = "auto";
@@ -493,6 +507,22 @@ export class RsRoomDetail extends LitElement {
                     .language=${this.hass.language}
                     @sensor-changed=${this._onSensorChanged}
                   ></rs-sensor-section>
+                </rs-section-card>
+
+                <rs-section-card
+                  icon="mdi:flash"
+                  .heading=${localize("room.section.power", this.hass.language)}
+                  editable
+                  @edit-click=${this._openEdit("power")}
+                >
+                  <rs-power-section
+                    .hass=${this.hass}
+                    .editing=${false}
+                    .auxHeatSensors=${this._selectedAuxHeatSensors}
+                    .climatePowerSensors=${this._selectedClimatePowerSensors}
+                    .language=${this.hass.language}
+                    @power-changed=${this._onPowerChanged}
+                  ></rs-power-section>
                 </rs-section-card>
 
                 ${this.presenceEnabled && this.presencePersons.length > 0
@@ -733,6 +763,22 @@ export class RsRoomDetail extends LitElement {
             @sensor-changed=${this._onSensorChanged}
           ></rs-sensor-section>
         </rs-edit-dialog>`;
+      case "power":
+        return html`<rs-edit-dialog
+          open
+          icon="mdi:flash"
+          .heading=${localize("room.section.power", lang)}
+          @dialog-closed=${this._closeEdit}
+        >
+          <rs-power-section
+            .hass=${this.hass}
+            .editing=${true}
+            .auxHeatSensors=${this._selectedAuxHeatSensors}
+            .climatePowerSensors=${this._selectedClimatePowerSensors}
+            .language=${this.hass.language}
+            @power-changed=${this._onPowerChanged}
+          ></rs-power-section>
+        </rs-edit-dialog>`;
       case "presence":
         return html`<rs-edit-dialog
           open
@@ -932,6 +978,16 @@ export class RsRoomDetail extends LitElement {
     this._autoSave();
   }
 
+  private _onPowerChanged(e: CustomEvent<{ key: string; value: string[] }>) {
+    const { key, value } = e.detail;
+    if (key === "aux_heat_sensors") {
+      this._selectedAuxHeatSensors = new Set(value);
+    } else if (key === "climate_power_sensors") {
+      this._selectedClimatePowerSensors = new Set(value);
+    }
+    this._autoSave();
+  }
+
   private _onValveProtectionExcludeToggle(e: CustomEvent<{ entityId: string; excluded: boolean }>) {
     const { entityId, excluded } = e.detail;
     const next = new Set(this._valveProtectionExclude);
@@ -1054,6 +1110,8 @@ export class RsRoomDetail extends LitElement {
         humidity_sensor: this._selectedHumiditySensor,
         occupancy_sensors: [...this._selectedOccupancySensors],
         window_sensors: [...this._selectedWindowSensors],
+        aux_heat_sensors: [...this._selectedAuxHeatSensors],
+        climate_power_sensors: [...this._selectedClimatePowerSensors],
         window_open_delay: this._windowOpenDelay,
         window_close_delay: this._windowCloseDelay,
         climate_mode: this._climateMode,

@@ -128,6 +128,8 @@ export interface RoomConfig {
   cover_min_positions?: Record<string, number>;
   ignore_presence?: boolean;
   is_outdoor?: boolean;
+  aux_heat_sensors?: string[];
+  climate_power_sensors?: string[];
   valve_protection_exclude?: string[];
   heat_source_orchestration?: boolean;
   heat_source_primary_delta?: number;
