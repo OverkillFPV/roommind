@@ -631,6 +631,21 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         idle_thr = self._room_climate_idle_threshold(room) or 0.0
         self._update_power_stats(area_id, q_aux, climate_power_w, idle_thr)
 
+        # Independent rated-power learning: the EKF only sees climate power
+        # via the training loop, which is gated on the controller's commanded
+        # mode.  When the AC's internal thermostat fires while RoomMind is in
+        # standby (or learning is paused), no rated_p_* would ever be learned.
+        # Observe peak draw directly here, with direction inferred from the
+        # device's hvac_mode + current-vs-setpoint check, so the W/°C/h
+        # efficiency metric becomes available regardless of who initiated
+        # the cycle.
+        if climate_power_w is not None and climate_power_w > idle_thr + 10.0:
+            inferred_running_mode = self._infer_device_mode(room)
+            if inferred_running_mode in (MODE_HEATING, MODE_COOLING):
+                self._model_manager.get_estimator(area_id).observe_climate_power(
+                    climate_power_w, inferred_running_mode, idle_thr
+                )
+
         # Determine and apply mode with MPC controller
         controller = MPCController(
             self.hass,

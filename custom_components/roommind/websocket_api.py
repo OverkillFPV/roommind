@@ -262,6 +262,14 @@ async def websocket_list_rooms(
             "active_cover_schedule_index": live.get("active_cover_schedule_index", -1),
             "active_heat_sources": live.get("active_heat_sources"),
             "learning_paused_reason": learning_paused_reason,
+            "aux_power_w": live.get("aux_power_w", 0),
+            "aux_power_avg_w": live.get("aux_power_avg_w", 0),
+            "aux_power_max_w": live.get("aux_power_max_w", 0),
+            "climate_power_w": live.get("climate_power_w"),
+            "climate_power_avg_w": live.get("climate_power_avg_w", 0),
+            "climate_power_max_w": live.get("climate_power_max_w", 0),
+            "climate_active_power": live.get("climate_active_power", False),
+            "climate_idle_power_w": live.get("climate_idle_power_w"),
         }
         result[area_id] = room_data
 
