@@ -21,6 +21,9 @@ class EkfTrainingManager:
         self._accumulated_dt: dict[str, float] = {}
         self._accumulated_mode: dict[str, str] = {}
         self._accumulated_pf: dict[str, float] = {}
+        self._accumulated_q_aux: dict[str, float] = {}
+        self._accumulated_climate_w: dict[str, float] = {}
+        self._climate_w_seen: dict[str, bool] = {}
         self.last_temps: dict[str, float] = {}
 
     def set_model_manager(self, model_manager: RoomModelManager) -> None:
@@ -43,6 +46,9 @@ class EkfTrainingManager:
         accumulated = self._accumulated_dt.pop(area_id, 0.0)
         prev_mode = self._accumulated_mode.pop(area_id, None)
         pf = self._accumulated_pf.pop(area_id, 1.0)
+        q_aux = self._accumulated_q_aux.pop(area_id, 0.0)
+        climate_w = self._accumulated_climate_w.pop(area_id, 0.0)
+        had_climate_w = self._climate_w_seen.pop(area_id, False)
         if accumulated > 0 and prev_mode is not None:
             self._model_manager.update(
                 area_id,
@@ -56,6 +62,8 @@ class EkfTrainingManager:
                 q_solar=q_solar * shading_factor,
                 q_residual=q_residual,
                 q_occupancy=q_occupancy,
+                q_aux=q_aux,
+                climate_power_w=climate_w if had_climate_w else None,
             )
 
     def process(
@@ -74,6 +82,8 @@ class EkfTrainingManager:
         can_cool: bool,
         dt_minutes: float,
         q_occupancy: float = 0.0,
+        q_aux: float = 0.0,
+        climate_power_w: float | None = None,
     ) -> None:
         """Process an EKF training step for a room.
 
@@ -95,6 +105,9 @@ class EkfTrainingManager:
             self._accumulated_dt.pop(area_id, None)
             self._accumulated_mode.pop(area_id, None)
             self._accumulated_pf.pop(area_id, None)
+            self._accumulated_q_aux.pop(area_id, None)
+            self._accumulated_climate_w.pop(area_id, None)
+            self._climate_w_seen.pop(area_id, None)
             # Always track temperature state to prevent stale _x[0]
             # when normal learning resumes.  Only learn k_window when
             # the signal is clean (no residual heat).
@@ -120,6 +133,9 @@ class EkfTrainingManager:
             self._accumulated_dt.pop(area_id, None)
             self._accumulated_mode.pop(area_id, None)
             self._accumulated_pf.pop(area_id, None)
+            self._accumulated_q_aux.pop(area_id, None)
+            self._accumulated_climate_w.pop(area_id, None)
+            self._climate_w_seen.pop(area_id, None)
         else:
             prev_mode = self._accumulated_mode.get(area_id)
             if prev_mode is not None and prev_mode != ekf_mode:
@@ -140,11 +156,22 @@ class EkfTrainingManager:
             if new_dt > 0:
                 old_pf = self._accumulated_pf.get(area_id, 1.0)
                 self._accumulated_pf[area_id] = (old_pf * old_dt + ekf_pf * dt_minutes) / new_dt
+                old_qa = self._accumulated_q_aux.get(area_id, 0.0)
+                self._accumulated_q_aux[area_id] = (old_qa * old_dt + q_aux * dt_minutes) / new_dt
+                if climate_power_w is not None:
+                    old_cw = self._accumulated_climate_w.get(area_id, 0.0)
+                    self._accumulated_climate_w[area_id] = (
+                        old_cw * old_dt + climate_power_w * dt_minutes
+                    ) / new_dt
+                    self._climate_w_seen[area_id] = True
             self._accumulated_dt[area_id] = new_dt
             self._accumulated_mode[area_id] = ekf_mode
 
             if self._accumulated_dt[area_id] >= EKF_UPDATE_MIN_DT:
                 pf = self._accumulated_pf.pop(area_id, 1.0)
+                qa = self._accumulated_q_aux.pop(area_id, 0.0)
+                cw = self._accumulated_climate_w.pop(area_id, 0.0)
+                had_cw = self._climate_w_seen.pop(area_id, False)
                 self._model_manager.update(
                     area_id,
                     current_temp,
@@ -157,6 +184,8 @@ class EkfTrainingManager:
                     q_solar=q_solar * shading_factor,
                     q_residual=q_residual,
                     q_occupancy=q_occupancy,
+                    q_aux=qa,
+                    climate_power_w=cw if had_cw else None,
                 )
                 self._accumulated_dt[area_id] = 0.0
 
@@ -167,6 +196,9 @@ class EkfTrainingManager:
         self._accumulated_dt.pop(area_id, None)
         self._accumulated_mode.pop(area_id, None)
         self._accumulated_pf.pop(area_id, None)
+        self._accumulated_q_aux.pop(area_id, None)
+        self._accumulated_climate_w.pop(area_id, None)
+        self._climate_w_seen.pop(area_id, None)
 
     def remove_room(self, area_id: str) -> None:
         """Clean up all state for a removed room."""

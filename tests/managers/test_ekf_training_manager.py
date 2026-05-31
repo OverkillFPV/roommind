@@ -49,6 +49,8 @@ class TestFlush:
             q_solar=0.0,
             q_residual=0.0,
             q_occupancy=0.0,
+            q_aux=0.0,
+            climate_power_w=None,
         )
         assert "room1" not in mgr._accumulated_dt
         assert "room1" not in mgr._accumulated_mode

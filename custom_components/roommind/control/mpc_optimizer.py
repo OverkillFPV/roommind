@@ -81,6 +81,7 @@ class MPCOptimizer:
         solar_series: list[float] | None = None,
         residual_series: list[float] | None = None,
         occupancy_series: list[float] | None = None,
+        aux_series: list[float] | None = None,
     ) -> MPCPlan:
         """Find optimal action sequence over the planning horizon.
 
@@ -120,6 +121,7 @@ class MPCOptimizer:
         q_solar = solar_series or [0.0] * n_blocks
         q_residual = residual_series or [0.0] * n_blocks
         q_occupancy = occupancy_series or [0.0] * n_blocks
+        q_aux = aux_series or [0.0] * n_blocks
 
         actions: list[str] = []
         temperatures: list[float] = [T_room]
@@ -135,6 +137,7 @@ class MPCOptimizer:
             qs = q_solar[i] if i < len(q_solar) else 0.0
             qr = q_residual[i] if i < len(q_residual) else 0.0
             qo = q_occupancy[i] if i < len(q_occupancy) else 0.0
+            qa = q_aux[i] if i < len(q_aux) else 0.0
 
             # Determine available actions this block
             available = [MODE_IDLE]
@@ -156,6 +159,7 @@ class MPCOptimizer:
                 future_solar = q_solar[i:] if q_solar else None
                 future_residual = q_residual[i:] if q_residual else None
                 future_occupancy = q_occupancy[i:] if q_occupancy else None
+                future_aux = q_aux[i:] if q_aux else None
                 for action in available:
                     cost = self._evaluate_action(
                         action,
@@ -170,6 +174,7 @@ class MPCOptimizer:
                         future_solar=future_solar,
                         future_residual=future_residual,
                         future_occupancy=future_occupancy,
+                        future_aux=future_aux,
                     )
                     if cost < best_cost:
                         best_cost = cost
@@ -186,6 +191,7 @@ class MPCOptimizer:
                 q_solar=qs,
                 q_residual=qr,
                 q_occupancy=qo,
+                q_aux=qa,
             )
             if best_action == MODE_IDLE:
                 pf = 0.0
@@ -207,6 +213,7 @@ class MPCOptimizer:
                 q_solar=qs,
                 q_residual=qr if Q == 0.0 else 0.0,
                 q_occupancy=qo,
+                q_aux=qa,
             )
             next_temp = max(self.temp_min, min(next_temp, self.temp_max))
 
@@ -246,6 +253,7 @@ class MPCOptimizer:
         future_solar: list[float] | None = None,
         future_residual: list[float] | None = None,
         future_occupancy: list[float] | None = None,
+        future_aux: list[float] | None = None,
     ) -> float:
         """Evaluate the cost of taking an action, looking a few steps ahead.
 
@@ -263,6 +271,7 @@ class MPCOptimizer:
         solar = future_solar or []
         residual = future_residual or []
         occupancy = future_occupancy or []
+        aux = future_aux or []
         synthesis_enabled = (
             action == MODE_HEATING
             and self._lookahead_blocks > LOOKAHEAD_BASE_BLOCKS
@@ -274,6 +283,7 @@ class MPCOptimizer:
         for j in range(lookahead):
             qs = solar[j] if j < len(solar) else 0.0
             qo = occupancy[j] if j < len(occupancy) else 0.0
+            qa = aux[j] if j < len(aux) else 0.0
             # Simulate HVAC for min_run_blocks (not just 1 block) to correctly
             # value sustained heating/cooling over the lookahead horizon.
             block_Q = Q if j < self.min_run_blocks else 0.0
@@ -299,6 +309,7 @@ class MPCOptimizer:
                 q_solar=qs,
                 q_residual=qr if block_Q == 0.0 else 0.0,
                 q_occupancy=qo,
+                q_aux=qa,
             )
             # Clamp temperature in lookahead to prevent cost explosion
             # from implausible model predictions
@@ -343,6 +354,7 @@ class MPCOptimizer:
         q_solar: float = 0.0,
         q_residual: float = 0.0,
         q_occupancy: float = 0.0,
+        q_aux: float = 0.0,
     ) -> tuple[float, str]:
         """Analytical closed-form optimal heating/cooling power.
 
@@ -380,6 +392,12 @@ class MPCOptimizer:
                 T_drift += beta * self.model.Q_occupancy * q_occupancy / alpha
             else:
                 T_drift += self.model.Q_occupancy * q_occupancy * dt_h
+        # Add predicted aux-heater gain to drift
+        if q_aux > 0:
+            if alpha > 0.01:
+                T_drift += beta * self.model.Q_aux * q_aux / alpha
+            else:
+                T_drift += self.model.Q_aux * q_aux * dt_h
 
         # Reference sub-target: close `approach_rate` of the remaining gap this block
         # instead of the whole gap (deadbeat). approach_rate=1.0 => T_ref == target =>

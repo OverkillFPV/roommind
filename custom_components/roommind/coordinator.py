@@ -611,6 +611,20 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 break
             # unavailable/unknown/off → skip (conservative: no occupancy heat)
 
+        # Read auxiliary heater power sensors (all dissipated energy → heat).
+        # Sum every sensor's current draw in watts.
+        q_aux = self._sum_power_sensors(room.get("aux_heat_sensors", []))
+
+        # Read climate-unit power sensors (lets the EKF measure real device load
+        # rather than relying solely on commanded power_fraction).  None when
+        # the user hasn't configured any sensor for this room.
+        climate_power_sensors: list[str] = room.get("climate_power_sensors", [])
+        climate_power_w: float | None
+        if climate_power_sensors:
+            climate_power_w = self._sum_power_sensors(climate_power_sensors)
+        else:
+            climate_power_w = None
+
         # Determine and apply mode with MPC controller
         controller = MPCController(
             self.hass,
@@ -631,6 +645,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             heating_system_type=system_type,
             shading_factor=shading_factor,
             q_occupancy=q_occupancy,
+            q_aux=q_aux,
         )
         mode, power_fraction = await controller.async_evaluate(current_temp, targets)
 
@@ -879,6 +894,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             q_residual=q_residual,
             shading_factor=shading_factor,
             q_occupancy=q_occupancy,
+            q_aux=q_aux,
+            climate_power_w=climate_power_w,
             has_external_sensor=has_external_sensor,
             heat_source_plan=heat_source_plan,
             climate_active=climate_active,
@@ -930,6 +947,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         q_residual: float,
         shading_factor: float | None,
         q_occupancy: float,
+        q_aux: float,
+        climate_power_w: float | None,
         has_external_sensor: bool,
         heat_source_plan: Any | None,
         climate_active: bool,
@@ -1055,6 +1074,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 can_cool=can_cool,
                 dt_minutes=UPDATE_INTERVAL / 60.0,
                 q_occupancy=q_occupancy,
+                q_aux=q_aux,
+                climate_power_w=climate_power_w,
             )
         else:
             self._ekf_training.clear(area_id)
@@ -1316,6 +1337,21 @@ class RoomMindCoordinator(DataUpdateCoordinator):
 
         pf = 1.0 if dominated in ("heating", "cooling") else 0.0
         return (dominated, pf)
+
+    def _sum_power_sensors(self, entity_ids: list[str]) -> float:
+        """Sum non-negative numeric power readings (W) across sensor entities."""
+        total = 0.0
+        for eid in entity_ids:
+            st = self.hass.states.get(eid)
+            if st is None or st.state in ("unavailable", "unknown"):
+                continue
+            try:
+                val = float(st.state)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                total += val
+        return total
 
     def _devices_lack_hvac_action(self, room: dict) -> bool:
         """Return True if at least one active device lacks hvac_action.

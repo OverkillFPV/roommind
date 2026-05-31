@@ -204,6 +204,8 @@ class RoomMindStore:
             "temperature_sensor": config.get("temperature_sensor", ""),
             "humidity_sensor": config.get("humidity_sensor", ""),
             "occupancy_sensors": config.get("occupancy_sensors", []),
+            "aux_heat_sensors": config.get("aux_heat_sensors", []),
+            "climate_power_sensors": config.get("climate_power_sensors", []),
             "climate_mode": config.get("climate_mode", "auto"),
             "schedules": config.get("schedules", []),
             "schedule_selector_entity": config.get("schedule_selector_entity", ""),

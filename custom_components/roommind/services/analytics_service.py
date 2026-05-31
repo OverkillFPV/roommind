@@ -337,6 +337,18 @@ async def build_analytics_data(
                         sim_q_occupancy = 1.0
                         break
 
+                sim_q_aux = 0.0
+                for aux_eid in room_config.get("aux_heat_sensors", []):
+                    aux_state = hass.states.get(aux_eid)
+                    if aux_state is None:
+                        continue
+                    try:
+                        val = float(aux_state.state)
+                    except (TypeError, ValueError):
+                        continue
+                    if val > 0:
+                        sim_q_aux += val
+
                 pred_temps = cast(
                     list[float | None],
                     simulate_prediction(
@@ -357,6 +369,7 @@ async def build_analytics_data(
                         heating_duration_minutes=sim_heat_dur,
                         last_power_fraction=sim_last_pf,
                         q_occupancy=sim_q_occupancy,
+                        q_aux=sim_q_aux,
                     ),
                 )
 

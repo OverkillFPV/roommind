@@ -724,6 +724,7 @@ class MPCController:
         mode_on_since: float | None = None,
         shading_factor: float = 1.0,
         q_occupancy: float = 0.0,
+        q_aux: float = 0.0,
     ) -> None:
         self.hass = hass
         self.room_config = room_config
@@ -749,6 +750,7 @@ class MPCController:
         self._mode_on_since = mode_on_since
         self._shading_factor = shading_factor
         self.q_occupancy = q_occupancy
+        self.q_aux = q_aux
         self._idle_targets: TargetTemps | None = None
 
         s = settings or {}
@@ -807,6 +809,7 @@ class MPCController:
             q_solar=self.q_solar,
             q_residual=self.q_residual,
             q_occupancy=self.q_occupancy,
+            q_aux=self.q_aux,
         )
         if pred_std < MPC_MAX_PREDICTION_STD and self._has_enough_data(can_heat, can_cool):
             return self._evaluate_mpc(current_temp, targets)
@@ -853,6 +856,7 @@ class MPCController:
             q_solar=self.q_solar * self._shading_factor,
             q_residual=self.q_residual,
             q_occupancy=self.q_occupancy,
+            q_aux=self.q_aux,
         )
 
     def _evaluate_mpc(
@@ -882,6 +886,9 @@ class MPCController:
 
         # Build occupancy heat series (constant over horizon)
         occupancy_series = [self.q_occupancy] * horizon_blocks
+
+        # Build auxiliary-heater series (constant over horizon)
+        aux_series = [self.q_aux] * horizon_blocks
 
         # Build dual target series with schedule lookahead for pre-heating/pre-cooling.
         # None values (from "off" action) are replaced with current_temp so the
@@ -933,6 +940,7 @@ class MPCController:
             solar_series=solar_series,
             residual_series=residual_series,
             occupancy_series=occupancy_series,
+            aux_series=aux_series,
         )
         self.last_plan = plan
 

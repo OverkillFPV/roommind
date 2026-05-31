@@ -66,6 +66,8 @@ _ROOM_SAVE_FIELDS = (
     "temperature_sensor",
     "humidity_sensor",
     "occupancy_sensors",
+    "aux_heat_sensors",
+    "climate_power_sensors",
     "climate_mode",
     "schedules",
     "schedule_selector_entity",
@@ -158,7 +160,7 @@ def _compute_anyone_home(hass: HomeAssistant, settings: dict) -> bool:
 
 def _validate_no_own_entities(config: dict, own_prefix: str) -> str | None:
     """Check that no RoomMind-owned entities are assigned. Returns error message or None."""
-    for field in ("thermostats", "acs", "window_sensors", "covers", "occupancy_sensors"):
+    for field in ("thermostats", "acs", "window_sensors", "covers", "occupancy_sensors", "aux_heat_sensors", "climate_power_sensors"):
         for eid in config.get(field, []):
             if eid.split(".", 1)[-1].startswith(own_prefix):
                 return f"Cannot assign RoomMind's own entity '{eid}' to a room"
@@ -320,6 +322,8 @@ async def websocket_list_rooms(
         vol.Optional("temperature_sensor"): str,
         vol.Optional("humidity_sensor"): str,
         vol.Optional("occupancy_sensors"): [str],
+        vol.Optional("aux_heat_sensors"): [str],
+        vol.Optional("climate_power_sensors"): [str],
         vol.Optional("climate_mode"): vol.In(CLIMATE_MODES),
         vol.Optional("schedules"): [{vol.Required("entity_id"): str}],
         vol.Optional("schedule_selector_entity"): str,
