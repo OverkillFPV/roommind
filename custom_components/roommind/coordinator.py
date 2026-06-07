@@ -646,7 +646,14 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                     climate_power_w, inferred_running_mode, idle_thr
                 )
 
-        # Determine and apply mode with MPC controller
+        # Determine and apply mode with MPC controller.
+        # Use the rolling average aux-power for MPC predictions rather than
+        # the raw instant reading — for cycling loads (TRVs, towel rails,
+        # thermostat-driven fans) the average reflects the actual heat
+        # delivered over the planning horizon, while the instant value would
+        # over- or under-shoot depending on where in the duty cycle we
+        # sampled.
+        q_aux_for_mpc = self._power_stats.get(area_id, {}).get("aux_avg", q_aux)
         controller = MPCController(
             self.hass,
             room,
@@ -666,7 +673,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             heating_system_type=system_type,
             shading_factor=shading_factor,
             q_occupancy=q_occupancy,
-            q_aux=q_aux,
+            q_aux=q_aux_for_mpc,
         )
         mode, power_fraction = await controller.async_evaluate(current_temp, targets)
 
@@ -1420,7 +1427,12 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         climate_w: float | None,
         climate_idle_threshold: float,
     ) -> None:
-        """Update per-area rolling power statistics (EMA average + observed max)."""
+        """Update per-area rolling power statistics (EMA average + observed max).
+
+        The EMA is warm-started on the first non-zero observation so it is
+        immediately useful for MPC planning rather than ramping up over the
+        full 50-sample window.
+        """
         stats = self._power_stats.setdefault(
             area_id,
             {
@@ -1431,11 +1443,17 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             },
         )
         a = self._POWER_EMA_ALPHA
-        stats["aux_avg"] = stats["aux_avg"] * (1.0 - a) + aux_w * a
+        if stats["aux_avg"] == 0.0 and aux_w > 0:
+            stats["aux_avg"] = aux_w
+        else:
+            stats["aux_avg"] = stats["aux_avg"] * (1.0 - a) + aux_w * a
         if aux_w > stats["aux_max"]:
             stats["aux_max"] = aux_w
         if climate_w is not None and climate_w >= climate_idle_threshold:
-            stats["climate_avg"] = stats["climate_avg"] * (1.0 - a) + climate_w * a
+            if stats["climate_avg"] == 0.0:
+                stats["climate_avg"] = climate_w
+            else:
+                stats["climate_avg"] = stats["climate_avg"] * (1.0 - a) + climate_w * a
             if climate_w > stats["climate_max"]:
                 stats["climate_max"] = climate_w
 

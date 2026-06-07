@@ -373,6 +373,12 @@ async def build_analytics_data(
                         continue
                     if val > 0:
                         sim_q_aux += val
+                # Use the rolling aux-power EMA when available — matches what
+                # the live MPC plans against and avoids forecast jitter from
+                # cycling loads.
+                avg_aux = coordinator._power_stats.get(area_id, {}).get("aux_avg")
+                if avg_aux is not None and avg_aux > 0:
+                    sim_q_aux = avg_aux
 
                 pred_temps = cast(
                     list[float | None],
