@@ -72,6 +72,7 @@ from .utils.device_utils import (
     get_ac_eids,
     get_all_entity_ids,
     get_direct_setpoint_eids,
+    get_regulation_offset,
     get_trv_eids,
     room_contributes_to_group,
 )
@@ -1187,6 +1188,47 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         _devs_with_eid = [d for d in _room_devices if d.get("entity_id")]
         _all_direct = bool(_devs_with_eid) and len(_direct_eids) == len(_devs_with_eid)
 
+        # Compute the raw setpoint then bias it by the primary device's regulation_offset
+        # so the displayed value matches what was actually sent to the device.
+        if heat_source_plan is not None:
+            _raw_setpoint = self._compute_device_setpoint_orchestrated(
+                heat_source_plan,
+                current_temp,
+                target_temp,
+                device_max_temp,
+                ac_device_max_temp,
+                direct_eids=_direct_eids,
+            )
+            _primary_eid: str | None = None
+            _active_cmds = [c for c in heat_source_plan.commands if c.active]
+            if _active_cmds:
+                _primary_eid = _active_cmds[0].entity_id
+        else:
+            _raw_setpoint = self._compute_device_setpoint(
+                mode,
+                power_fraction,
+                current_temp,
+                target_temp,
+                has_external_sensor,
+                device_max_temp=device_max_temp,
+                device_min_temp=device_min_temp,
+                has_thermostats=bool(get_trv_eids(_room_devices)),
+                has_acs=bool(get_ac_eids(_room_devices)),
+                all_direct=_all_direct,
+            )
+            _primary_eid = next(
+                (d.get("entity_id") for d in _room_devices if d.get("entity_id")), None
+            )
+        if _raw_setpoint is not None and _primary_eid is not None:
+            _reg_offset = get_regulation_offset(_room_devices, _primary_eid)
+            if _reg_offset != 0.0:
+                _ha_offset = celsius_delta_to_ha(self.hass, _reg_offset)
+                if mode == MODE_HEATING:
+                    _raw_setpoint = round(_raw_setpoint + _ha_offset, 1)
+                elif mode == MODE_COOLING:
+                    _raw_setpoint = round(_raw_setpoint - _ha_offset, 1)
+        _device_setpoint = _raw_setpoint
+
         return {
             "area_id": area_id,
             "current_temp": current_temp,
@@ -1198,27 +1240,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             "mode": display_mode,
             "commanded_mode": mode,
             "heating_power": round(display_pf * 100) if display_mode != MODE_IDLE else 0,
-            "device_setpoint": self._compute_device_setpoint_orchestrated(
-                heat_source_plan,
-                current_temp,
-                target_temp,
-                device_max_temp,
-                ac_device_max_temp,
-                direct_eids=_direct_eids,
-            )
-            if heat_source_plan is not None
-            else self._compute_device_setpoint(
-                mode,
-                power_fraction,
-                current_temp,
-                target_temp,
-                has_external_sensor,
-                device_max_temp=device_max_temp,
-                device_min_temp=device_min_temp,
-                has_thermostats=bool(get_trv_eids(_room_devices)),
-                has_acs=bool(get_ac_eids(_room_devices)),
-                all_direct=_all_direct,
-            ),
+            "device_setpoint": _device_setpoint,
             "window_open": window_open,
             **build_override_live(
                 room,
