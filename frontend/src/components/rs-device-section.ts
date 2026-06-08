@@ -10,6 +10,7 @@ import { masterDetailStyles } from "../styles/master-detail-styles";
 import { inputStyles } from "../styles/input-styles";
 import "./shared/rs-master-detail";
 import "./shared/rs-info-icon";
+import "./shared/rs-threshold-field";
 
 @customElement("rs-device-section")
 export class RsDeviceSection extends LitElement {
@@ -784,20 +785,17 @@ export class RsDeviceSection extends LitElement {
             </div>
           `
         : nothing}
-      <div class="detail-field with-info">
-        <ha-textfield
-          .label=${localize("devices.regulation_offset", lang)}
-          .value=${device.regulation_offset != null ? String(device.regulation_offset) : "0"}
-          type="number"
-          min="-5"
-          max="5"
-          step="0.1"
-          suffix="°C"
-          @input=${(e: Event) => this._onRegulationOffsetChange(entityId, e)}
-          style="width: 100%;"
-        ></ha-textfield>
-        <rs-info-icon .text=${localize("devices.regulation_offset_hint", lang)}></rs-info-icon>
-      </div>
+      <rs-threshold-field
+        .label=${localize("devices.regulation_offset", lang)}
+        .hint=${localize("devices.regulation_offset_hint", lang)}
+        .value=${device.regulation_offset ?? 0}
+        .min=${-5}
+        .max=${5}
+        .step=${0.1}
+        suffix="°C"
+        @value-changed=${(e: CustomEvent) =>
+          this._onRegulationOffsetChangeDirect(entityId, e.detail as number)}
+      ></rs-threshold-field>
       ${isThermostat && this.valveProtectionEnabled
         ? html`
             <div class="detail-toggle-row">
@@ -903,11 +901,8 @@ export class RsDeviceSection extends LitElement {
     this._fireDeviceChanged(newDevices);
   }
 
-  private _onRegulationOffsetChange(entityId: string, e: Event): void {
-    const raw = (e.target as HTMLInputElement).value;
-    let val = parseFloat(raw);
+  private _onRegulationOffsetChangeDirect(entityId: string, val: number): void {
     if (isNaN(val)) val = 0;
-    // Clamp to backend schema range
     if (val < -5) val = -5;
     if (val > 5) val = 5;
     const newDevices = this.devices.map((d) =>
