@@ -207,6 +207,8 @@
   "devices.setpoint_mode_proportional": "Proportional (valve control)",
   "devices.setpoint_mode_direct": "Direct (device regulates)",
   "devices.setpoint_mode_hint": "Direct sends the actual room target to the device — best for thermostats and space heaters that regulate themselves. Proportional sends a boosted setpoint toward the device max_temp — best for radiator valves (TRVs).",
+  "devices.regulation_offset": "Regulation offset",
+  "devices.regulation_offset_hint": "Signed °C offset applied to the setpoint sent to the device. Positive forces harder action (higher target when heating, lower when cooling); negative softens it. Useful to compensate for a miscalibrated device sensor or to push past internal hysteresis. Default 0.",
   "devices.valve_protection_excluded": "Excluded from valve protection",
   "devices.valve_protection_exclude_hint": "This entity will not be cycled by valve protection (e.g. virtual boiler entities)",
   "devices.info.types_title": "Device types",

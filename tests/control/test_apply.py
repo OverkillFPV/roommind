@@ -1784,6 +1784,224 @@ async def test_heating_trv_dual_setpoint_full_control():
 
 
 # ---------------------------------------------------------------------------
+# Per-device regulation_offset tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_heat_intent_adds():
+    """Positive regulation_offset increases the setpoint when temp_intent='heat'."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "heat"
+    state.attributes = {"hvac_modes": ["heat", "off"], "temperature": 20.0, "min_temp": 5, "max_temp": 30}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room()
+    room["devices"][0]["regulation_offset"] = 1.5
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 21.0},
+        temp_intent="heat",
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["temperature"] == pytest.approx(22.5)
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_cool_intent_subtracts():
+    """Positive regulation_offset lowers the setpoint when temp_intent='cool'."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "cool"
+    state.attributes = {"hvac_modes": ["cool", "off"], "temperature": 25.0, "min_temp": 16, "max_temp": 30}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room(thermostats=[], acs=["climate.ac"])
+    room["devices"][0]["regulation_offset"] = 1.0
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=30.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.ac", "temperature": 23.0},
+        temp_intent="cool",
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["temperature"] == pytest.approx(22.0)
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_negative_softens_heat():
+    """Negative offset lowers the heating setpoint (softens action)."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "heat"
+    state.attributes = {"hvac_modes": ["heat", "off"], "temperature": 19.0, "min_temp": 5, "max_temp": 30}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room()
+    room["devices"][0]["regulation_offset"] = -0.5
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 22.0},
+        temp_intent="heat",
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["temperature"] == pytest.approx(21.5)
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_no_intent_ignored():
+    """Offset is not applied when temp_intent is empty (range/idle sends)."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "heat"
+    state.attributes = {"hvac_modes": ["heat", "off"], "temperature": 20.0, "min_temp": 5, "max_temp": 30}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room()
+    room["devices"][0]["regulation_offset"] = 2.0
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 21.0},
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["temperature"] == pytest.approx(21.0)
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_clamped_to_device_max():
+    """Offset that pushes past device max is clamped."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "heat"
+    state.attributes = {"hvac_modes": ["heat", "off"], "temperature": 20.0, "min_temp": 5, "max_temp": 25}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room()
+    room["devices"][0]["regulation_offset"] = 5.0
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    # 24 + 5 = 29 → clamped to 25
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 24.0},
+        temp_intent="heat",
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["temperature"] == 25
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_zero_is_noop():
+    """Default offset of 0.0 leaves the setpoint unchanged (and triggers redundancy skip)."""
+    hass = build_hass()
+    state = MagicMock()
+    state.state = "heat"
+    state.attributes = {"hvac_modes": ["heat", "off"], "temperature": 21.0, "min_temp": 5, "max_temp": 30}
+    hass.states.get = MagicMock(return_value=state)
+
+    room = make_room()
+    # No regulation_offset set → defaults to 0.0
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 21.0},
+        temp_intent="heat",
+    )
+    hass.services.async_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_call_regulation_offset_applied_to_dual_setpoint():
+    """Offset is applied before dual-setpoint conversion (target_temp_low gets offset)."""
+    hass = build_hass()
+    trv_state = MagicMock()
+    trv_state.state = "heat"
+    trv_state.attributes = {
+        "hvac_modes": ["heat", "off"],
+        "target_temp_low": 18.0,
+        "target_temp_high": 25.0,
+        "min_temp": 5.0,
+        "max_temp": 30.0,
+    }
+    hass.states.get = MagicMock(return_value=trv_state)
+
+    room = make_room()
+    room["devices"][0]["regulation_offset"] = 1.0
+    ctrl = MPCController(
+        hass,
+        room,
+        model_manager=RoomModelManager(),
+        outdoor_temp=5.0,
+        settings={},
+        has_external_sensor=True,
+    )
+    await ctrl._call(
+        "set_temperature",
+        {"entity_id": "climate.living_trv", "temperature": 21.0},
+        temp_intent="heat",
+    )
+
+    assert hass.services.async_call.called
+    call_data = hass.services.async_call.call_args[0][2]
+    assert call_data["target_temp_low"] == pytest.approx(22.0)
+
+
+# ---------------------------------------------------------------------------
 # Command cache tests
 # ---------------------------------------------------------------------------
 

@@ -73,6 +73,7 @@ export interface DeviceConfig {
   idle_action?: "off" | "fan_only" | "setback" | "low"; // default "off"
   idle_fan_mode?: string; // default "low"
   setpoint_mode?: "proportional" | "direct"; // default "proportional"
+  regulation_offset?: number; // signed °C, default 0; biases setpoint toward action
 }
 
 export type ConflictResolution =

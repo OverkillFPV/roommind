@@ -784,6 +784,20 @@ export class RsDeviceSection extends LitElement {
             </div>
           `
         : nothing}
+      <div class="detail-field with-info">
+        <ha-textfield
+          .label=${localize("devices.regulation_offset", lang)}
+          .value=${device.regulation_offset != null ? String(device.regulation_offset) : "0"}
+          type="number"
+          min="-5"
+          max="5"
+          step="0.1"
+          suffix="°C"
+          @input=${(e: Event) => this._onRegulationOffsetChange(entityId, e)}
+          style="width: 100%;"
+        ></ha-textfield>
+        <rs-info-icon .text=${localize("devices.regulation_offset_hint", lang)}></rs-info-icon>
+      </div>
       ${isThermostat && this.valveProtectionEnabled
         ? html`
             <div class="detail-toggle-row">
@@ -885,6 +899,19 @@ export class RsDeviceSection extends LitElement {
   private _onSetpointModeChange(entityId: string, mode: string): void {
     const newDevices = this.devices.map((d) =>
       d.entity_id === entityId ? { ...d, setpoint_mode: mode as "proportional" | "direct" } : d,
+    );
+    this._fireDeviceChanged(newDevices);
+  }
+
+  private _onRegulationOffsetChange(entityId: string, e: Event): void {
+    const raw = (e.target as HTMLInputElement).value;
+    let val = parseFloat(raw);
+    if (isNaN(val)) val = 0;
+    // Clamp to backend schema range
+    if (val < -5) val = -5;
+    if (val > 5) val = 5;
+    const newDevices = this.devices.map((d) =>
+      d.entity_id === entityId ? { ...d, regulation_offset: val } : d,
     );
     this._fireDeviceChanged(newDevices);
   }

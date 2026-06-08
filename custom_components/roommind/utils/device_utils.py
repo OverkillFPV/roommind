@@ -31,6 +31,8 @@ DEFAULT_IDLE_SETBACK_OFFSET = 2.0
 SETPOINT_MODE_PROPORTIONAL = "proportional"
 SETPOINT_MODE_DIRECT = "direct"
 
+DEFAULT_REGULATION_OFFSET = 0.0
+
 # Active HVAC modes that indicate real device capabilities.
 _ACTIVE_HVAC_MODES = {"heat", "cool", "heat_cool", "auto"}
 
@@ -69,6 +71,7 @@ def legacy_to_devices(
                 "idle_action": IDLE_ACTION_OFF,
                 "idle_fan_mode": DEFAULT_IDLE_FAN_MODE,
                 "setpoint_mode": SETPOINT_MODE_PROPORTIONAL,
+                "regulation_offset": DEFAULT_REGULATION_OFFSET,
             }
         )
     for eid in acs:
@@ -81,6 +84,7 @@ def legacy_to_devices(
                 "idle_action": IDLE_ACTION_OFF,
                 "idle_fan_mode": DEFAULT_IDLE_FAN_MODE,
                 "setpoint_mode": SETPOINT_MODE_PROPORTIONAL,
+                "regulation_offset": DEFAULT_REGULATION_OFFSET,
             }
         )
     return devices
@@ -226,6 +230,17 @@ def get_idle_action(devices: list[dict], entity_id: str) -> tuple[str, str]:
 def get_direct_setpoint_eids(devices: list[dict]) -> set[str]:
     """Return entity IDs of devices with setpoint_mode='direct'."""
     return {d["entity_id"] for d in devices if d.get("entity_id") and d.get("setpoint_mode") == SETPOINT_MODE_DIRECT}
+
+
+def get_regulation_offset(devices: list[dict], entity_id: str) -> float:
+    """Return the signed regulation_offset (°C) for a device, or 0.0 if unset."""
+    dev = get_device_by_eid(devices, entity_id)
+    if dev is None:
+        return DEFAULT_REGULATION_OFFSET
+    try:
+        return float(dev.get("regulation_offset", DEFAULT_REGULATION_OFFSET))
+    except (ValueError, TypeError):
+        return DEFAULT_REGULATION_OFFSET
 
 
 def build_rooms_devices_map(rooms: dict) -> dict[str, list[dict]]:

@@ -17,6 +17,7 @@ from custom_components.roommind.utils.device_utils import (
     get_direct_setpoint_eids,
     get_entity_ids_by_type,
     get_idle_action,
+    get_regulation_offset,
     get_room_heating_system_type,
     get_trv_eids,
     has_reliable_hvac_modes,
@@ -65,9 +66,11 @@ def test_legacy_to_devices_basic():
         "idle_action": "off",
         "idle_fan_mode": "low",
         "setpoint_mode": "proportional",
+        "regulation_offset": 0.0,
     }
     assert devices[2]["type"] == "ac"
     assert devices[2]["heating_system_type"] == ""
+    assert devices[2]["regulation_offset"] == 0.0
 
 
 def test_legacy_to_devices_heating_system_type_transferred_to_trvs():
@@ -404,6 +407,35 @@ def test_get_idle_action_configured():
     action, fan_mode = get_idle_action(devices, "climate.ac1")
     assert action == "fan_only"
     assert fan_mode == "auto"
+
+
+# ---------------------------------------------------------------------------
+# get_regulation_offset
+# ---------------------------------------------------------------------------
+
+
+def test_get_regulation_offset_missing_device_defaults_to_zero():
+    assert get_regulation_offset([], "climate.nope") == 0.0
+
+
+def test_get_regulation_offset_default_zero_when_field_absent():
+    devices = [{"entity_id": "climate.trv1", "type": "trv"}]
+    assert get_regulation_offset(devices, "climate.trv1") == 0.0
+
+
+def test_get_regulation_offset_returns_configured_value():
+    devices = [{"entity_id": "climate.trv1", "type": "trv", "regulation_offset": 1.5}]
+    assert get_regulation_offset(devices, "climate.trv1") == 1.5
+
+
+def test_get_regulation_offset_supports_negative():
+    devices = [{"entity_id": "climate.trv1", "type": "trv", "regulation_offset": -0.5}]
+    assert get_regulation_offset(devices, "climate.trv1") == -0.5
+
+
+def test_get_regulation_offset_invalid_value_defaults_to_zero():
+    devices = [{"entity_id": "climate.trv1", "type": "trv", "regulation_offset": "bad"}]
+    assert get_regulation_offset(devices, "climate.trv1") == 0.0
 
 
 def test_build_rooms_devices_map_basic():

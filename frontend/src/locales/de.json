@@ -207,6 +207,8 @@
   "devices.setpoint_mode_proportional": "Proportional (Ventilsteuerung)",
   "devices.setpoint_mode_direct": "Direkt (Gerät regelt selbst)",
   "devices.setpoint_mode_hint": "Direkt sendet die tatsächliche Raum-Zieltemperatur ans Gerät — geeignet für Thermostate und Heizlüfter mit eigener Regelung. Proportional sendet einen erhöhten Sollwert Richtung Geräte-max_temp — geeignet für Heizkörperventile (TRVs).",
+  "devices.regulation_offset": "Regelungs-Offset",
+  "devices.regulation_offset_hint": "Vorzeichenbehafteter °C-Offset, der auf den ans Gerät gesendeten Sollwert addiert wird. Positiv erzwingt stärkere Aktion (höheres Ziel beim Heizen, niedriger beim Kühlen); negativ schwächt sie ab. Nützlich, um einen verstimmten Geräte-Sensor auszugleichen oder die interne Hysterese zu überwinden. Standard 0.",
   "devices.valve_protection_excluded": "Vom Ventilschutz ausgenommen",
   "devices.valve_protection_exclude_hint": "Dieses Gerät wird nicht vom Ventilschutz bewegt (z.B. virtuelle Kessel-Entitäten)",
   "devices.info.types_title": "Gerätetypen",

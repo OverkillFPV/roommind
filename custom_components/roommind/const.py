@@ -76,6 +76,13 @@ AC_BOOST_DELTA_MAX = 50.0  # Comfort-end AC cap (°C); finite value above any re
 PROPORTIONAL_DEADBAND_C = 0.5  # Minimum proportional setpoint change (°C) to resend, in the gentle regime
 PROPORTIONAL_DEADBAND_NEAR_TARGET_C = 0.2  # Finer proportional deadband (°C) within 1°C of target
 
+# Per-device regulation offset (°C, signed). Biases the setpoint sent to the
+# device in the direction of the current action: positive forces harder
+# heating/cooling, negative softens it. Useful to compensate for device
+# sensor calibration or to overcome internal hysteresis dead zones.
+DEFAULT_REGULATION_OFFSET = 0.0
+MAX_REGULATION_OFFSET = 5.0
+
 # Update interval in seconds
 UPDATE_INTERVAL = 30
 

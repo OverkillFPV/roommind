@@ -41,6 +41,7 @@ from ..utils.device_utils import (
     get_ac_eids,
     get_direct_setpoint_eids,
     get_idle_action,
+    get_regulation_offset,
     get_trv_eids,
     has_reliable_hvac_modes,
 )
@@ -1693,6 +1694,19 @@ class MPCController:
                     resolved,
                 )
                 data = {**data, "hvac_mode": resolved}
+
+        # Apply per-device regulation offset (signed, °C). Biases setpoint toward
+        # more aggressive action in the current temp_intent direction: heat → +,
+        # cool → −. Range-mode (target_temp_low/high without temp_intent) is
+        # skipped because the bias direction is ambiguous there.
+        if service == "set_temperature" and "temperature" in data and temp_intent and eid:
+            offset_c = get_regulation_offset(self._devices, eid)
+            if offset_c != 0.0:
+                ha_offset = celsius_delta_to_ha(self.hass, offset_c)
+                if temp_intent == "heat":
+                    data = {**data, "temperature": data["temperature"] + ha_offset}
+                elif temp_intent == "cool":
+                    data = {**data, "temperature": data["temperature"] - ha_offset}
 
         # Clamp temperature to device min/max range (before redundancy check
         # so that e.g. 30°C clamped to 25°C is correctly seen as redundant
