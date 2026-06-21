@@ -1,5 +1,5 @@
 import { html, css, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { customElement, property } from "lit/decorators.js";
 import type { ScheduleEntry, ClimateMode } from "../types";
 import { localize } from "../utils/localize";
 import {
@@ -36,9 +36,6 @@ export class RsScheduleSettings extends RsScheduleBase {
   @property({ type: Number }) public ecoCool = 27.0;
   @property({ type: String }) public climateMode: ClimateMode = "auto";
 
-  // Resolved once at creation: true = HA 2026.5+ (ha-textfield removed, use ha-input directly)
-  @state() private _useHaInput = !customElements.get("ha-textfield");
-
   static styles = [
     RsScheduleBase.sharedStyles,
     inputStyles,
@@ -63,9 +60,54 @@ export class RsScheduleSettings extends RsScheduleBase {
         gap: 6px;
       }
 
-      ha-textfield,
-      ha-input {
+      .temp-field {
+        display: flex;
+        flex-direction: column;
+        background: var(--secondary-background-color, rgba(255, 255, 255, 0.06));
+        border-radius: 8px;
+        padding: 6px 12px 8px;
+        min-height: 48px;
+        box-sizing: border-box;
+        justify-content: center;
+        border: 1px solid var(--outline-color, var(--divider-color, rgba(255, 255, 255, 0.12)));
+      }
+
+      .temp-field-label {
+        font-size: 11px;
+        color: var(--secondary-text-color);
+        margin-bottom: 2px;
+        user-select: none;
+      }
+
+      .temp-field-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .temp-field-input {
         flex: 1;
+        background: none;
+        border: none;
+        outline: none;
+        color: var(--primary-text-color);
+        font-size: 14px;
+        font-family: inherit;
+        min-width: 0;
+        -moz-appearance: textfield;
+        padding: 0;
+      }
+
+      .temp-field-input::-webkit-outer-spin-button,
+      .temp-field-input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+
+      .temp-field-suffix {
+        color: var(--secondary-text-color);
+        font-size: 13px;
+        flex-shrink: 0;
       }
 
       .view-temps {
@@ -251,28 +293,21 @@ export class RsScheduleSettings extends RsScheduleBase {
     const suffix = tempUnit(this.hass);
     const step = tempStep(this.hass);
     const { min, max } = tempRange(5, 35, this.hass);
-    if (this._useHaInput) {
-      return html`<ha-input
-        .type=${"number"}
-        .value=${displayVal}
-        .label=${label}
-        .min=${min}
-        .max=${max}
-        .step=${step}
-        .withoutSpinButtons=${true}
-        @change=${handler}
-      ><span slot="end" style="color:var(--secondary-text-color)">${suffix}</span></ha-input>`;
-    }
-    return html`<ha-textfield
-      type="number"
-      .value=${displayVal}
-      label=${label}
-      suffix=${suffix}
-      step=${step}
-      min=${min}
-      max=${max}
-      @change=${handler}
-    ></ha-textfield>`;
+    return html`<div class="temp-field">
+      ${label ? html`<span class="temp-field-label">${label}</span>` : nothing}
+      <div class="temp-field-row">
+        <input
+          class="temp-field-input"
+          type="number"
+          .value=${displayVal}
+          min=${min}
+          max=${max}
+          step=${step}
+          @change=${handler}
+        />
+        <span class="temp-field-suffix">${suffix}</span>
+      </div>
+    </div>`;
   }
 
   // ─── Schedule list ─────────────────────────────────────────────
