@@ -12,6 +12,7 @@ import {
 } from "../utils/temperature";
 import { RsScheduleBase } from "./shared/rs-schedule-base";
 import { inputStyles } from "../styles/input-styles";
+import "./shared/rs-threshold-field";
 
 @customElement("rs-schedule-settings")
 export class RsScheduleSettings extends RsScheduleBase {
@@ -60,54 +61,8 @@ export class RsScheduleSettings extends RsScheduleBase {
         gap: 6px;
       }
 
-      .temp-field {
-        display: flex;
-        flex-direction: column;
-        background: var(--secondary-background-color, rgba(255, 255, 255, 0.06));
-        border-radius: 8px;
-        padding: 6px 12px 8px;
-        min-height: 48px;
-        box-sizing: border-box;
-        justify-content: center;
-        border: 1px solid var(--outline-color, var(--divider-color, rgba(255, 255, 255, 0.12)));
-      }
-
-      .temp-field-label {
-        font-size: 11px;
-        color: var(--secondary-text-color);
-        margin-bottom: 2px;
-        user-select: none;
-      }
-
-      .temp-field-row {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-
-      .temp-field-input {
-        flex: 1;
-        background: none;
-        border: none;
-        outline: none;
-        color: var(--primary-text-color);
-        font-size: 14px;
-        font-family: inherit;
-        min-width: 0;
-        -moz-appearance: textfield;
-        padding: 0;
-      }
-
-      .temp-field-input::-webkit-outer-spin-button,
-      .temp-field-input::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-      }
-
-      .temp-field-suffix {
-        color: var(--secondary-text-color);
-        font-size: 13px;
-        flex-shrink: 0;
+      rs-threshold-field {
+        display: block;
       }
 
       .view-temps {
@@ -289,25 +244,16 @@ export class RsScheduleSettings extends RsScheduleBase {
     handler: (e: Event) => void,
     label = "",
   ) {
-    const displayVal = String(toDisplay(valueCelsius, this.hass));
-    const suffix = tempUnit(this.hass);
-    const step = tempStep(this.hass);
     const { min, max } = tempRange(5, 35, this.hass);
-    return html`<div class="temp-field">
-      ${label ? html`<span class="temp-field-label">${label}</span>` : nothing}
-      <div class="temp-field-row">
-        <input
-          class="temp-field-input"
-          type="number"
-          .value=${displayVal}
-          min=${min}
-          max=${max}
-          step=${step}
-          @change=${handler}
-        />
-        <span class="temp-field-suffix">${suffix}</span>
-      </div>
-    </div>`;
+    return html`<rs-threshold-field
+      .label=${label}
+      .suffix=${tempUnit(this.hass)}
+      .value=${toDisplay(valueCelsius, this.hass)}
+      .min=${parseFloat(min)}
+      .max=${parseFloat(max)}
+      .step=${parseFloat(tempStep(this.hass))}
+      @value-changed=${handler}
+    ></rs-threshold-field>`;
   }
 
   // ─── Schedule list ─────────────────────────────────────────────
@@ -491,8 +437,7 @@ export class RsScheduleSettings extends RsScheduleBase {
   // ─── Temperature change handlers ──────────────────────────────
 
   private _onComfortHeatChange(e: Event) {
-    const target = e.target as HTMLElement & { value: string };
-    const val = toCelsius(parseFloat(target.value) || toDisplay(21.0, this.hass), this.hass);
+    const val = toCelsius((e as CustomEvent<number>).detail, this.hass);
     this.dispatchEvent(
       new CustomEvent("comfort-heat-changed", {
         detail: { value: val },
@@ -512,8 +457,7 @@ export class RsScheduleSettings extends RsScheduleBase {
   }
 
   private _onComfortCoolChange(e: Event) {
-    const target = e.target as HTMLElement & { value: string };
-    const val = toCelsius(parseFloat(target.value) || toDisplay(24.0, this.hass), this.hass);
+    const val = toCelsius((e as CustomEvent<number>).detail, this.hass);
     this.dispatchEvent(
       new CustomEvent("comfort-cool-changed", {
         detail: { value: val },
@@ -533,8 +477,7 @@ export class RsScheduleSettings extends RsScheduleBase {
   }
 
   private _onEcoHeatChange(e: Event) {
-    const target = e.target as HTMLElement & { value: string };
-    const val = toCelsius(parseFloat(target.value) || toDisplay(17.0, this.hass), this.hass);
+    const val = toCelsius((e as CustomEvent<number>).detail, this.hass);
     this.dispatchEvent(
       new CustomEvent("eco-heat-changed", {
         detail: { value: val },
@@ -554,8 +497,7 @@ export class RsScheduleSettings extends RsScheduleBase {
   }
 
   private _onEcoCoolChange(e: Event) {
-    const target = e.target as HTMLElement & { value: string };
-    const val = toCelsius(parseFloat(target.value) || toDisplay(27.0, this.hass), this.hass);
+    const val = toCelsius((e as CustomEvent<number>).detail, this.hass);
     this.dispatchEvent(
       new CustomEvent("eco-cool-changed", {
         detail: { value: val },
