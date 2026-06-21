@@ -639,7 +639,7 @@ export class RsRoomDetail extends LitElement {
           icon="mdi:calendar"
           .heading=${localize("room.section.schedule", lang)}
           hasInfo
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <div slot="info">
             <p><strong>${localize("schedule.help_temps_title", lang)}</strong></p>
@@ -715,7 +715,7 @@ export class RsRoomDetail extends LitElement {
           icon="mdi:power-plug"
           .heading=${localize("room.section.devices", lang)}
           hasInfo
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <div slot="info">
             <b>${localize("devices.info.types_title", lang)}</b><br />
@@ -751,7 +751,7 @@ export class RsRoomDetail extends LitElement {
           open
           icon="mdi:thermometer"
           .heading=${localize("room.section.sensors", lang)}
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <rs-sensor-section
             .hass=${this.hass}
@@ -791,7 +791,7 @@ export class RsRoomDetail extends LitElement {
           icon="mdi:home-account"
           .heading=${localize("room.section.presence", lang)}
           hasInfo
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <div slot="info">
             <b>${localize("presence.room_help_header", lang)}</b><br />
@@ -818,7 +818,7 @@ export class RsRoomDetail extends LitElement {
           icon="mdi:blinds-horizontal"
           .heading=${localize("room.section.covers", lang)}
           hasInfo
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <div slot="info">
             <b>${localize("covers.info.selection_title", lang)}</b><br />
@@ -884,7 +884,7 @@ export class RsRoomDetail extends LitElement {
           open
           icon="mdi:swap-horizontal"
           .heading=${localize("room.section.heat_source", lang)}
-          @dialog-closed=${this._closeEdit}
+          @rs-dialog-closed=${this._closeEdit}
         >
           <rs-heat-source-section
             .hass=${this.hass}

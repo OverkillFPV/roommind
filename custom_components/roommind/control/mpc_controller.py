@@ -1285,7 +1285,9 @@ class MPCController:
                 if can_heat and ha_heat_target is not None:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat"})
                     await self._call(
-                        "set_temperature", {"entity_id": eid, "temperature": ha_heat_target}, temp_intent="heat"
+                        "set_temperature",
+                        {"entity_id": eid, "temperature": ha_heat_target, "hvac_mode": "heat"},
+                        temp_intent="heat",
                     )
                 else:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "off"})
@@ -1308,10 +1310,19 @@ class MPCController:
                         low = min(ha_heat_target, ha_cool_target)
                         high = max(ha_heat_target, ha_cool_target)
                         await self._call(
-                            "set_temperature", {"entity_id": eid, "target_temp_low": low, "target_temp_high": high}
+                            "set_temperature",
+                            {
+                                "entity_id": eid,
+                                "target_temp_low": low,
+                                "target_temp_high": high,
+                                "hvac_mode": "heat_cool",
+                            },
                         )
                     else:
-                        await self._call("set_temperature", {"entity_id": eid, "temperature": ac_target})
+                        await self._call(
+                            "set_temperature",
+                            {"entity_id": eid, "temperature": ac_target, "hvac_mode": "heat_cool"},
+                        )
                 elif not thermostats and can_heat and can_cool and "heat" in ac_modes and "cool" in ac_modes:
                     # AC-only room, device supports heat+cool but not heat_cool:
                     # use device's built-in temperature to pick the right mode.
@@ -1320,7 +1331,7 @@ class MPCController:
                         await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "cool"})
                         await self._call(
                             "set_temperature",
-                            {"entity_id": eid, "temperature": ha_cool_target},
+                            {"entity_id": eid, "temperature": ha_cool_target, "hvac_mode": "cool"},
                             temp_intent="cool",
                         )
                     else:
@@ -1328,23 +1339,29 @@ class MPCController:
                         await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat"})
                         await self._call(
                             "set_temperature",
-                            {"entity_id": eid, "temperature": ac_heat_t},
+                            {"entity_id": eid, "temperature": ac_heat_t, "hvac_mode": "heat"},
                             temp_intent="heat",
                         )
                 elif can_cool and "cool" in ac_modes:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "cool"})
                     await self._call(
-                        "set_temperature", {"entity_id": eid, "temperature": ac_target}, temp_intent="cool"
+                        "set_temperature",
+                        {"entity_id": eid, "temperature": ac_target, "hvac_mode": "cool"},
+                        temp_intent="cool",
                     )
                 elif can_heat and "heat" in ac_modes:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat"})
                     await self._call(
-                        "set_temperature", {"entity_id": eid, "temperature": ac_heat_target}, temp_intent="heat"
+                        "set_temperature",
+                        {"entity_id": eid, "temperature": ac_heat_target, "hvac_mode": "heat"},
+                        temp_intent="heat",
                     )
                 elif "auto" in ac_modes:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "auto"})
                     await self._call(
-                        "set_temperature", {"entity_id": eid, "temperature": ac_heat_target}, temp_intent="heat"
+                        "set_temperature",
+                        {"entity_id": eid, "temperature": ac_heat_target, "hvac_mode": "auto"},
+                        temp_intent="heat",
                     )
                 else:
                     await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "off"})
@@ -1368,32 +1385,27 @@ class MPCController:
                             )
                             await self._call(
                                 "set_temperature",
-                                {"entity_id": cmd.entity_id, "temperature": ha_t},
+                                {"entity_id": cmd.entity_id, "temperature": ha_t, "hvac_mode": "heat"},
                                 temp_intent="heat",
                             )
                         else:
                             ac_state = self.hass.states.get(cmd.entity_id)
                             ac_modes = _effective_ac_modes(ac_state)
                             if "heat" in ac_modes:
-                                await self._call(
-                                    "set_hvac_mode",
-                                    {"entity_id": cmd.entity_id, "hvac_mode": "heat"},
-                                )
+                                ac_mode = "heat"
                             elif "heat_cool" in ac_modes:
-                                await self._call(
-                                    "set_hvac_mode",
-                                    {"entity_id": cmd.entity_id, "hvac_mode": "heat_cool"},
-                                )
+                                ac_mode = "heat_cool"
                             elif "auto" in ac_modes:
-                                await self._call(
-                                    "set_hvac_mode",
-                                    {"entity_id": cmd.entity_id, "hvac_mode": "auto"},
-                                )
+                                ac_mode = "auto"
                             else:
                                 continue
                             await self._call(
+                                "set_hvac_mode",
+                                {"entity_id": cmd.entity_id, "hvac_mode": ac_mode},
+                            )
+                            await self._call(
                                 "set_temperature",
-                                {"entity_id": cmd.entity_id, "temperature": ha_t},
+                                {"entity_id": cmd.entity_id, "temperature": ha_t, "hvac_mode": ac_mode},
                                 temp_intent="heat",
                             )
                     continue
@@ -1418,7 +1430,7 @@ class MPCController:
                         await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": "heat"})
                         await self._call(
                             "set_temperature",
-                            {"entity_id": cmd.entity_id, "temperature": ha_t},
+                            {"entity_id": cmd.entity_id, "temperature": ha_t, "hvac_mode": "heat"},
                             temp_intent="heat",
                             deadband=self._proportional_deadband(cmd.entity_id, current_temp, effective_target),
                         )
@@ -1437,26 +1449,18 @@ class MPCController:
                         ac_state = self.hass.states.get(cmd.entity_id)
                         ac_modes = _effective_ac_modes(ac_state)
                         if "heat" in ac_modes:
-                            await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": "heat"})
-                            await self._call(
-                                "set_temperature",
-                                {"entity_id": cmd.entity_id, "temperature": ha_t},
-                                temp_intent="heat",
-                                deadband=self._proportional_deadband(cmd.entity_id, current_temp, effective_target),
-                            )
+                            ac_mode = "heat"
                         elif "heat_cool" in ac_modes:
-                            await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": "heat_cool"})
-                            await self._call(
-                                "set_temperature",
-                                {"entity_id": cmd.entity_id, "temperature": ha_t},
-                                temp_intent="heat",
-                                deadband=self._proportional_deadband(cmd.entity_id, current_temp, effective_target),
-                            )
+                            ac_mode = "heat_cool"
                         elif "auto" in ac_modes:
-                            await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": "auto"})
+                            ac_mode = "auto"
+                        else:
+                            ac_mode = ""
+                        if ac_mode:
+                            await self._call("set_hvac_mode", {"entity_id": cmd.entity_id, "hvac_mode": ac_mode})
                             await self._call(
                                 "set_temperature",
-                                {"entity_id": cmd.entity_id, "temperature": ha_t},
+                                {"entity_id": cmd.entity_id, "temperature": ha_t, "hvac_mode": ac_mode},
                                 temp_intent="heat",
                                 deadband=self._proportional_deadband(cmd.entity_id, current_temp, effective_target),
                             )
@@ -1506,7 +1510,7 @@ class MPCController:
                 await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat"})
                 await self._call(
                     "set_temperature",
-                    {"entity_id": eid, "temperature": ha_t},
+                    {"entity_id": eid, "temperature": ha_t, "hvac_mode": "heat"},
                     temp_intent="heat",
                     deadband=self._proportional_deadband(eid, current_temp, effective_target),
                 )
@@ -1530,26 +1534,18 @@ class MPCController:
                 ac_state = self.hass.states.get(eid)
                 ac_modes = _effective_ac_modes(ac_state)
                 if "heat" in ac_modes:
-                    await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat"})
-                    await self._call(
-                        "set_temperature",
-                        {"entity_id": eid, "temperature": ha_t},
-                        temp_intent="heat",
-                        deadband=self._proportional_deadband(eid, current_temp, effective_target),
-                    )
+                    ac_mode = "heat"
                 elif "heat_cool" in ac_modes:
-                    await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "heat_cool"})
-                    await self._call(
-                        "set_temperature",
-                        {"entity_id": eid, "temperature": ha_t},
-                        temp_intent="heat",
-                        deadband=self._proportional_deadband(eid, current_temp, effective_target),
-                    )
+                    ac_mode = "heat_cool"
                 elif "auto" in ac_modes:
-                    await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "auto"})
+                    ac_mode = "auto"
+                else:
+                    ac_mode = ""
+                if ac_mode:
+                    await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": ac_mode})
                     await self._call(
                         "set_temperature",
-                        {"entity_id": eid, "temperature": ha_t},
+                        {"entity_id": eid, "temperature": ha_t, "hvac_mode": ac_mode},
                         temp_intent="heat",
                         deadband=self._proportional_deadband(eid, current_temp, effective_target),
                     )
@@ -1575,7 +1571,7 @@ class MPCController:
                 await self._call("set_hvac_mode", {"entity_id": eid, "hvac_mode": "cool"})
                 await self._call(
                     "set_temperature",
-                    {"entity_id": eid, "temperature": ha_t},
+                    {"entity_id": eid, "temperature": ha_t, "hvac_mode": "cool"},
                     temp_intent="cool",
                     deadband=self._proportional_deadband(eid, current_temp, effective_target),
                 )
@@ -1693,6 +1689,23 @@ class MPCController:
                     data["hvac_mode"],
                     resolved,
                 )
+                data = {**data, "hvac_mode": resolved}
+
+        # Resolve hvac_mode bundled with set_temperature (#337).  Sending the
+        # mode atomically with the temperature prevents integrations that
+        # build device commands from a stale power cache (e.g. midea_ac_lan)
+        # from turning the device back off right after set_hvac_mode.  When
+        # the device reports modes that exclude the desired one with no
+        # fallback (e.g. ["off", "fan_only"], #100/#135) the key is dropped
+        # and the previous two-call behavior is kept.  An empty hvac_modes
+        # list keeps the raw mode, mirroring the set_hvac_mode direct-send
+        # path for devices with unreliable mode reporting.
+        if service == "set_temperature" and "hvac_mode" in data and state:
+            hvac_modes = state.attributes.get("hvac_modes") or []
+            resolved = resolve_hvac_mode(data["hvac_mode"], hvac_modes)
+            if resolved is None:
+                data = {k: v for k, v in data.items() if k != "hvac_mode"}
+            elif resolved != data["hvac_mode"]:
                 data = {**data, "hvac_mode": resolved}
 
         # Apply per-device regulation offset (signed, °C). Biases setpoint toward
