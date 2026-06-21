@@ -1,5 +1,5 @@
 import { html, css, nothing } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import type { ScheduleEntry, ClimateMode } from "../types";
 import { localize } from "../utils/localize";
 import {
@@ -36,6 +36,9 @@ export class RsScheduleSettings extends RsScheduleBase {
   @property({ type: Number }) public ecoCool = 27.0;
   @property({ type: String }) public climateMode: ClimateMode = "auto";
 
+  // Resolved once at creation: true = HA 2026.5+ (ha-textfield removed, use ha-input directly)
+  @state() private _useHaInput = !customElements.get("ha-textfield");
+
   static styles = [
     RsScheduleBase.sharedStyles,
     inputStyles,
@@ -60,7 +63,8 @@ export class RsScheduleSettings extends RsScheduleBase {
         gap: 6px;
       }
 
-      ha-textfield {
+      ha-textfield,
+      ha-input {
         flex: 1;
       }
 
@@ -236,6 +240,41 @@ export class RsScheduleSettings extends RsScheduleBase {
     `;
   }
 
+  // ─── Temperature input helper ─────────────────────────────
+
+  private _renderTempInput(
+    valueCelsius: number,
+    handler: (e: Event) => void,
+    label = "",
+  ) {
+    const displayVal = String(toDisplay(valueCelsius, this.hass));
+    const suffix = tempUnit(this.hass);
+    const step = tempStep(this.hass);
+    const { min, max } = tempRange(5, 35, this.hass);
+    if (this._useHaInput) {
+      return html`<ha-input
+        .type=${"number"}
+        .value=${displayVal}
+        .label=${label}
+        .min=${min}
+        .max=${max}
+        .step=${step}
+        .withoutSpinButtons=${true}
+        @change=${handler}
+      ><span slot="end" style="color:var(--secondary-text-color)">${suffix}</span></ha-input>`;
+    }
+    return html`<ha-textfield
+      type="number"
+      .value=${displayVal}
+      label=${label}
+      suffix=${suffix}
+      step=${step}
+      min=${min}
+      max=${max}
+      @change=${handler}
+    ></ha-textfield>`;
+  }
+
   // ─── Schedule list ─────────────────────────────────────────────
 
   private _renderScheduleList() {
@@ -282,46 +321,14 @@ export class RsScheduleSettings extends RsScheduleBase {
             <ha-icon icon="mdi:fire" style="--mdc-icon-size:16px"></ha-icon>
             ${localize("schedule.row_heat", l)}
           </div>
-          <ha-textfield
-            type="number"
-            .value=${String(toDisplay(this.comfortHeat, this.hass))}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this._onComfortHeatChange}
-          ></ha-textfield>
-          <ha-textfield
-            type="number"
-            .value=${String(toDisplay(this.ecoHeat, this.hass))}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this._onEcoHeatChange}
-          ></ha-textfield>
+          ${this._renderTempInput(this.comfortHeat, this._onComfortHeatChange)}
+          ${this._renderTempInput(this.ecoHeat, this._onEcoHeatChange)}
           <div class="temp-grid-row-label">
             <ha-icon icon="mdi:snowflake" style="--mdc-icon-size:16px"></ha-icon>
             ${localize("schedule.row_cool", l)}
           </div>
-          <ha-textfield
-            type="number"
-            .value=${String(toDisplay(this.comfortCool, this.hass))}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this._onComfortCoolChange}
-          ></ha-textfield>
-          <ha-textfield
-            type="number"
-            .value=${String(toDisplay(this.ecoCool, this.hass))}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this._onEcoCoolChange}
-          ></ha-textfield>
+          ${this._renderTempInput(this.comfortCool, this._onComfortCoolChange)}
+          ${this._renderTempInput(this.ecoCool, this._onEcoCoolChange)}
         </div>
       `;
     }
@@ -329,39 +336,18 @@ export class RsScheduleSettings extends RsScheduleBase {
     return html`
       <div class="temp-inputs">
         <div class="temp-input-group">
-          <ha-textfield
-            type="number"
-            label=${localize("schedule.comfort_label", l)}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            .value=${String(
-              toDisplay(
-                this.climateMode === "cool_only" ? this.comfortCool : this.comfortHeat,
-                this.hass,
-              ),
-            )}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this.climateMode === "cool_only"
-              ? this._onComfortCoolChange
-              : this._onComfortHeatChange}
-          ></ha-textfield>
+          ${this._renderTempInput(
+            this.climateMode === "cool_only" ? this.comfortCool : this.comfortHeat,
+            this.climateMode === "cool_only" ? this._onComfortCoolChange : this._onComfortHeatChange,
+            localize("schedule.comfort_label", l),
+          )}
         </div>
         <div class="temp-input-group">
-          <ha-textfield
-            type="number"
-            label=${localize("schedule.eco_label", l)}
-            suffix=${tempUnit(this.hass)}
-            step=${tempStep(this.hass)}
-            .value=${String(
-              toDisplay(this.climateMode === "cool_only" ? this.ecoCool : this.ecoHeat, this.hass),
-            )}
-            min=${tempRange(5, 35, this.hass).min}
-            max=${tempRange(5, 35, this.hass).max}
-            @change=${this.climateMode === "cool_only"
-              ? this._onEcoCoolChange
-              : this._onEcoHeatChange}
-          ></ha-textfield>
+          ${this._renderTempInput(
+            this.climateMode === "cool_only" ? this.ecoCool : this.ecoHeat,
+            this.climateMode === "cool_only" ? this._onEcoCoolChange : this._onEcoHeatChange,
+            localize("schedule.eco_label", l),
+          )}
         </div>
       </div>
       <div class="fallback-hint">${localize("schedule.comfort_hint", l)}</div>

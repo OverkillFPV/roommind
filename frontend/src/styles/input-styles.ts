@@ -10,6 +10,7 @@ import { css } from "lit";
  */
 export const inputStyles = css`
   ha-textfield,
+  ha-input,
   ha-select,
   ha-entity-picker,
   ha-combo-box {
