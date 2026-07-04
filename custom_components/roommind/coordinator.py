@@ -150,6 +150,10 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         self._mode_on_since: dict[str, float] = {}
         # Sensor dropout fallback: last valid temperature per room
         self._last_valid_temps: dict[str, tuple[float, float]] = {}  # {area_id: (celsius, monotonic_ts)}
+        # Startup guard: rooms with at least one valid temperature reading since
+        # coordinator start. Full Control rooms send no device commands until then
+        # (prevents the off/on bounce after HA restart while sensors are unavailable).
+        self._had_valid_temp: set[str] = set()
         self._switch_entity_areas: set[str] = set()
         self._climate_control_switch_areas: set[str] = set()
         self._binary_sensor_entity_areas: set[str] = set()
@@ -377,6 +381,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
 
         if current_temp is not None:
             self._last_valid_temps[area_id] = (current_temp, time.monotonic())
+            self._had_valid_temp.add(area_id)
         elif area_id in self._last_valid_temps:
             cached_temp, cached_ts = self._last_valid_temps[area_id]
             if time.monotonic() - cached_ts < MAX_SENSOR_STALENESS:
@@ -517,7 +522,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 "window_open": False,
                 "override_active": False,
                 "override_type": None,
-                "override_temp": None,
+                "override_heat": None,
+                "override_cool": None,
                 "override_until": None,
                 "override_suppressed": False,
                 "active_schedule_index": -1,
@@ -721,6 +727,9 @@ class RoomMindCoordinator(DataUpdateCoordinator):
             power_fraction = 0.0
 
         climate_active = settings.get("climate_control_active", True) and room.get("climate_control_enabled", True)
+        # Startup guard: Full Control room without any temperature reading yet —
+        # leave devices in their current state instead of idling them.
+        waiting_for_data = has_external_sensor and area_id not in self._had_valid_temp
 
         # Read device temperature limits for dynamic boost targets
         trv_max_temps: list[float] = []
@@ -802,7 +811,13 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                     if self._compressor_manager.check_must_stay_active(eid):
                         compressor_forced_on.add(eid)
 
-            if compressor_forced_off and compressor_forced_off >= set(all_device_eids):
+            # In cooling mode only ACs can cool, so TRVs must not prevent the IDLE
+            # transition when all cooling-capable devices are blocked.  In heating
+            # mode both TRVs and ACs can contribute, so the full device set applies.
+            _mode_relevant_eids = (
+                set(get_ac_eids(room.get("devices", []))) if mode == MODE_COOLING else set(all_device_eids)
+            )
+            if compressor_forced_off and _mode_relevant_eids and compressor_forced_off >= _mode_relevant_eids:
                 mode = MODE_IDLE
                 power_fraction = 0.0
                 compressor_forced_off.clear()
@@ -818,7 +833,18 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                 q_residual=q_residual,
             )
 
-        if climate_active:
+        if not climate_active:
+            # Climate control disabled — do NOT send commands.
+            mode = MODE_IDLE
+            power_fraction = 0.0
+        elif waiting_for_data:
+            mode = MODE_IDLE
+            power_fraction = 0.0
+            _LOGGER.debug(
+                "Room '%s': no temperature reading since startup, skipping device control",
+                area_id,
+            )
+        else:
             try:
                 await controller.async_apply(
                     mode,
@@ -861,10 +887,6 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                     self._compressor_manager.update_member(eid, True)
                 else:
                     self._compressor_manager.update_member(eid, False)
-        else:
-            # Climate control disabled — do NOT send commands.
-            mode = MODE_IDLE
-            power_fraction = 0.0
 
         # --- Cover/blind automatic control ---
         has_override = is_override_active(room)
@@ -1558,15 +1580,15 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         """
         from .utils.schedule_utils import find_active_block
 
-        # 1. Override — single-point target (suppressed when presence-away clears it)
-        override_temp = room.get("override_temp")
+        # 1. Override — split heat/cool dead-band (suppressed when presence-away clears it)
+        override_heat = room.get("override_heat")
+        override_cool = room.get("override_cool")
         override_until = room.get("override_until")
-        if override_temp is not None:
+        if override_heat is not None or override_cool is not None:
             if override_until is None or time.time() < override_until:
                 presence_away_now = not room.get("ignore_presence", False) and self._is_presence_away(room, settings)
                 if not (presence_away_now and bool(settings.get("presence_clears_override", False))):
-                    t = float(override_temp)
-                    return TargetTemps(heat=t, cool=t)
+                    return TargetTemps(heat=override_heat, cool=override_cool)
             else:
                 # Timed override has expired — auto-clear
                 area_id = room.get("area_id", "unknown")
@@ -1575,7 +1597,8 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                     store.async_update_room(
                         area_id,
                         {
-                            "override_temp": None,
+                            "override_heat": None,
+                            "override_cool": None,
                             "override_until": None,
                             "override_type": None,
                         },
@@ -1757,6 +1780,7 @@ class RoomMindCoordinator(DataUpdateCoordinator):
         self._window_manager.remove_room(area_id)
         self._previous_modes.pop(area_id, None)
         self._last_valid_temps.pop(area_id, None)
+        self._had_valid_temp.discard(area_id)
         self._ekf_training.remove_room(area_id)
         self._pending_predictions.pop(area_id, None)
         self._residual_tracker.remove_room(area_id)
@@ -1907,6 +1931,19 @@ class RoomMindCoordinator(DataUpdateCoordinator):
 
             modes.append(commanded)
         return modes
+
+    def _any_member_room_waiting(self, members: list[str], rooms_config: dict[str, dict]) -> bool:
+        """Return True when a Full Control member room has no temperature reading yet."""
+        member_set = set(members)
+        for area_id, room in rooms_config.items():
+            if not room.get("temperature_sensor") or area_id in self._had_valid_temp:
+                continue
+            if room.get("is_outdoor", False) or not room.get("climate_control_enabled", True):
+                continue
+            device_eids = {d.get("entity_id", "") for d in room.get("devices", [])}
+            if device_eids & member_set:
+                return True
+        return False
 
     def _resolve_master_hvac_mode(self, master_entity: str, action: str) -> str | None:
         """Map action to supported hvac_mode for master entity. Returns None if unsupported."""
@@ -2066,6 +2103,11 @@ class RoomMindCoordinator(DataUpdateCoordinator):
                     self.outdoor_temp_effective,
                     settings.get("outdoor_heating_max", DEFAULT_OUTDOOR_HEATING_MAX),
                 )
+
+                # Startup guard: don't idle the master while a member room is
+                # still waiting for its first temperature reading.
+                if new_action == "idle" and self._any_member_room_waiting(group.members, rooms_config):
+                    continue
 
                 # 4. Get previous state for transition detection
                 state = self._compressor_manager.get_state(gid)

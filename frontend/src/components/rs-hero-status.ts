@@ -22,7 +22,8 @@ export class RsHeroStatus extends LitElement {
   @property({ attribute: false }) public overrideInfo: {
     active: boolean;
     type: OverrideType | null;
-    temp: number | null;
+    heat: number | null;
+    cool: number | null;
     until: number | null;
   } | null = null;
   @state() private _countdown = "";
@@ -372,7 +373,10 @@ export class RsHeroStatus extends LitElement {
             ? localize("override.eco", l)
             : localize("override.custom", l);
       const colorClass = `override-${ov.type}`;
-      const displayTemp = ov.temp ?? targetTemp;
+      const ovHeat = ov.heat;
+      const ovCool = ov.cool;
+      const showOvRange = ovHeat != null && ovCool != null && ovHeat !== ovCool;
+      const ovSingle = ovHeat ?? ovCool ?? targetTemp;
 
       return html`
         <div class="hero-target">
@@ -381,9 +385,12 @@ export class RsHeroStatus extends LitElement {
             ${label} ${localize("hero.override", l)}
           </div>
           <div class="hero-target-value">
-            ${displayTemp !== null
-              ? html`${formatTemp(displayTemp, this.hass)}${tempUnit(this.hass)}`
-              : "--"}
+            ${showOvRange
+              ? html`${formatTemp(ovHeat!, this.hass)} –
+                ${formatTemp(ovCool!, this.hass)}${tempUnit(this.hass)}`
+              : ovSingle !== null
+                ? html`${formatTemp(ovSingle, this.hass)}${tempUnit(this.hass)}`
+                : "--"}
           </div>
           ${this._countdown
             ? html`<div class="hero-target-countdown">

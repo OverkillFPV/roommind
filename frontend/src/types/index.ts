@@ -34,7 +34,8 @@ export interface RoomLiveData {
   device_setpoint: number | null; // Device target temp in Full Control mode
   override_active: boolean;
   override_type: OverrideType | null;
-  override_temp: number | null;
+  override_heat: number | null;
+  override_cool: number | null;
   override_until: number | null;
   override_suppressed: boolean;
   active_schedule_index: number;
@@ -114,7 +115,8 @@ export interface RoomConfig {
   comfort_cool: number;
   eco_heat: number;
   eco_cool: number;
-  override_temp?: number | null;
+  override_heat?: number | null;
+  override_cool?: number | null;
   override_until?: number | null;
   override_type?: OverrideType | null;
   presence_persons?: string[];

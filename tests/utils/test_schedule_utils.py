@@ -788,7 +788,8 @@ class TestResolveTargetsAtTime:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -813,7 +814,8 @@ class TestResolveTargetsAtTime:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -832,7 +834,8 @@ class TestResolveTargetsAtTime:
             ts=now,
             schedule_blocks=None,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -853,7 +856,8 @@ class TestResolveTargetsAtTime:
             ts=now,
             schedule_blocks=None,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -874,7 +878,8 @@ class TestResolveTargetsAtTime:
             ts=now,
             schedule_blocks=None,
             override_until=now + 3600,
-            override_temp=25.0,
+            override_heat=25.0,
+            override_cool=25.0,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -893,7 +898,8 @@ class TestResolveTargetsAtTime:
             ts=now,
             schedule_blocks=None,
             override_until=now + 3600,
-            override_temp=25.0,
+            override_heat=25.0,
+            override_cool=25.0,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -914,7 +920,8 @@ class TestResolveTargetsAtTime:
             ts=now,
             schedule_blocks=None,
             override_until=now + 3600,
-            override_temp=25.0,
+            override_heat=25.0,
+            override_cool=25.0,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -941,7 +948,8 @@ class TestResolveTargetsAtTime:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=21.0,
@@ -950,6 +958,66 @@ class TestResolveTargetsAtTime:
             eco_cool=27.0,
         )
         assert result == TargetTemps(heat=22.5, cool=22.5)
+
+    def test_override_returns_split_dead_band(self):
+        """Active override with both targets returns split heat/cool dead-band."""
+        from custom_components.roommind.utils.schedule_utils import resolve_targets_at_time
+
+        result = resolve_targets_at_time(
+            ts=1000.0,
+            schedule_blocks=None,
+            override_until=None,
+            override_heat=21.0,
+            override_cool=24.0,
+            vacation_until=None,
+            vacation_temp=None,
+            comfort_heat=20.0,
+            comfort_cool=25.0,
+            eco_heat=17.0,
+            eco_cool=27.0,
+        )
+        assert result.heat == 21.0
+        assert result.cool == 24.0
+
+    def test_override_heat_only_leaves_cool_none(self):
+        """Heat-only override keeps cool at None (direction off)."""
+        from custom_components.roommind.utils.schedule_utils import resolve_targets_at_time
+
+        result = resolve_targets_at_time(
+            ts=1000.0,
+            schedule_blocks=None,
+            override_until=None,
+            override_heat=21.0,
+            override_cool=None,
+            vacation_until=None,
+            vacation_temp=None,
+            comfort_heat=20.0,
+            comfort_cool=25.0,
+            eco_heat=17.0,
+            eco_cool=27.0,
+        )
+        assert result.heat == 21.0
+        assert result.cool is None
+
+    def test_override_expired_falls_through_to_comfort(self):
+        """Expired override falls through to comfort targets."""
+        from custom_components.roommind.utils.schedule_utils import resolve_targets_at_time
+
+        result = resolve_targets_at_time(
+            ts=1000.0,
+            schedule_blocks=None,
+            override_until=500.0,
+            override_heat=21.0,
+            override_cool=24.0,
+            vacation_until=None,
+            vacation_temp=None,
+            comfort_heat=20.0,
+            comfort_cool=25.0,
+            eco_heat=17.0,
+            eco_cool=27.0,
+        )
+        assert result.heat == 20.0
+        assert result.cool == 25.0
 
 
 class TestMakeTargetResolverCoolValues:
@@ -1015,7 +1083,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=20.0,
@@ -1044,7 +1113,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=20.0,
@@ -1073,7 +1143,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=20.0,
@@ -1102,7 +1173,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=schedule_blocks,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=None,
             vacation_temp=None,
             comfort_heat=20.0,
@@ -1121,7 +1193,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=None,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=ts + 3600,
             vacation_temp=17.0,
             comfort_heat=21.0,
@@ -1141,7 +1214,8 @@ class TestResolveTargetsAtTimeSplitBlockTemps:
             ts=ts,
             schedule_blocks=None,
             override_until=None,
-            override_temp=None,
+            override_heat=None,
+            override_cool=None,
             vacation_until=ts + 3600,
             vacation_temp=30.0,
             comfort_heat=21.0,

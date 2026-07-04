@@ -472,7 +472,8 @@ async def websocket_delete_room(
         vol.Required("type"): "roommind/override/set",
         vol.Required("area_id"): str,
         vol.Required("override_type"): vol.In(OVERRIDE_TYPES),
-        vol.Optional("temperature"): vol.Coerce(float),
+        vol.Optional("heat"): vol.Coerce(float),
+        vol.Optional("cool"): vol.Coerce(float),
         vol.Optional("duration"): vol.Coerce(float),  # hours (omit or 0 for permanent)
     }
 )
@@ -493,31 +494,37 @@ async def websocket_override_set(
         connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
         return
 
-    # Resolve override temperature
+    climate_mode = room.get("climate_mode", "auto")
+
     if override_type == "boost":
-        climate_mode = room.get("climate_mode", "auto")
-        if climate_mode == "cool_only":
-            override_temp = room.get("comfort_cool", DEFAULT_COMFORT_COOL)
-        else:
-            override_temp = room.get("comfort_heat", room.get("comfort_temp", DEFAULT_COMFORT_HEAT))
+        heat = room.get("comfort_heat", room.get("comfort_temp", DEFAULT_COMFORT_HEAT))
+        cool = room.get("comfort_cool", DEFAULT_COMFORT_COOL)
     elif override_type == "eco":
-        climate_mode = room.get("climate_mode", "auto")
-        if climate_mode == "cool_only":
-            override_temp = room.get("eco_cool", DEFAULT_ECO_COOL)
-        else:
-            override_temp = room.get("eco_heat", room.get("eco_temp", DEFAULT_ECO_HEAT))
+        heat = room.get("eco_heat", room.get("eco_temp", DEFAULT_ECO_HEAT))
+        cool = room.get("eco_cool", DEFAULT_ECO_COOL)
     else:  # custom
-        override_temp = msg.get("temperature")
-        if override_temp is None:
-            connection.send_error(msg["id"], "invalid", "Custom override requires temperature")
+        heat = msg.get("heat")
+        cool = msg.get("cool")
+        if heat is None and cool is None:
+            connection.send_error(msg["id"], "invalid", "Custom override requires heat and/or cool")
             return
+
+    if climate_mode == "heat_only":
+        cool = None
+    elif climate_mode == "cool_only":
+        heat = None
+
+    if heat is not None and cool is not None and cool < heat:
+        connection.send_error(msg["id"], "invalid", "Cooling target must be >= heating target")
+        return
 
     override_until = (time.time() + duration_hours * 3600) if duration_hours else None
 
     await store.async_update_room(
         area_id,
         {
-            "override_temp": override_temp,
+            "override_heat": heat,
+            "override_cool": cool,
             "override_until": override_until,
             "override_type": override_type,
         },
@@ -559,7 +566,8 @@ async def websocket_override_clear(
     await store.async_update_room(
         area_id,
         {
-            "override_temp": None,
+            "override_heat": None,
+            "override_cool": None,
             "override_until": None,
             "override_type": None,
         },

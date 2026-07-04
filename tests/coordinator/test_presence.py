@@ -62,7 +62,8 @@ class TestPresenceDetection:
         """Manual override takes priority over presence."""
         room_with_override = {
             **SAMPLE_ROOM,
-            "override_temp": 25.0,
+            "override_heat": 25.0,
+            "override_cool": 25.0,
             "override_until": time.time() + 3600,
             "override_type": "boost",
         }
@@ -86,7 +87,8 @@ class TestPresenceDetection:
         """presence_clears_override=True: presence-away suppresses active override (#306)."""
         room_with_override = {
             **SAMPLE_ROOM,
-            "override_temp": 25.0,
+            "override_heat": 25.0,
+            "override_cool": 25.0,
             "override_until": time.time() + 3600,
             "override_type": "boost",
         }
@@ -114,7 +116,8 @@ class TestPresenceDetection:
         """ignore_presence=True per room: override stays in effect even with setting on."""
         room_with_override = {
             **SAMPLE_ROOM,
-            "override_temp": 25.0,
+            "override_heat": 25.0,
+            "override_cool": 25.0,
             "override_until": time.time() + 3600,
             "override_type": "boost",
             "ignore_presence": True,
@@ -401,7 +404,8 @@ class TestPresenceDetection:
         """Manual override takes priority even when presence_away_action is 'off'."""
         room_with_override = {
             **SAMPLE_ROOM,
-            "override_temp": 25.0,
+            "override_heat": 25.0,
+            "override_cool": 25.0,
             "override_until": time.time() + 3600,
             "override_type": "boost",
         }
