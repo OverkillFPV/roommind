@@ -49,6 +49,7 @@ export interface RoomLiveData {
   mold_prevention_delta: number;
   blind_position: number | null;
   cover_auto_paused: boolean;
+  cover_override_until?: number | null;
   cover_forced_reason: string;
   active_cover_schedule_index: number;
   active_heat_sources: string | null;
@@ -61,6 +62,21 @@ export interface RoomLiveData {
   climate_power_max_w?: number;
   climate_active_power?: boolean;
   climate_idle_power_w?: number | null;
+  compressor_protection_active: boolean;
+  compressor_protection_reason: "min_off" | "min_run" | null;
+  coil_dry_active: boolean;
+  coil_dry_phase: "drain" | "blow" | null;
+  coil_dry_until: number | null;
+  coil_dry_entities: string[];
+  schedule_temp_warnings: ScheduleTempWarning[];
+}
+
+/** A schedule block temperature the backend discarded as implausible (#395). */
+export interface ScheduleTempWarning {
+  day: string; // lowercase English weekday, e.g. "monday"
+  from: string; // "HH:MM:SS"
+  field: "temperature" | "heat_temperature" | "cool_temperature";
+  value: string; // the offending raw value; may not be numeric
 }
 
 export type DeviceType = "trv" | "ac";
@@ -75,13 +91,14 @@ export interface DeviceConfig {
   idle_fan_mode?: string; // default "low"
   setpoint_mode?: "proportional" | "direct"; // default "proportional"
   regulation_offset?: number; // signed °C, default 0; biases setpoint toward action
+  coil_dry?: "inherit" | "on" | "off"; // default "inherit"
+  coil_dry_minutes?: number; // 0 = inherit global
+  coil_dry_mode?: "" | "fan_only" | "dry"; // "" = inherit global
+  coil_dry_fan_mode?: string; // "" = inherit global, "__keep__" = keep current
 }
 
 export type ConflictResolution =
-  | "heating_priority"
-  | "cooling_priority"
-  | "majority"
-  | "outdoor_temp";
+  "heating_priority" | "cooling_priority" | "majority" | "outdoor_temp";
 
 export interface CompressorGroup {
   id: string;
@@ -173,6 +190,12 @@ export interface GlobalSettings {
   schedule_off_action?: "eco" | "off";
   valve_protection_enabled?: boolean;
   valve_protection_interval_days?: number;
+  coil_dry_enabled?: boolean;
+  coil_dry_minutes?: number;
+  coil_dry_mode?: "fan_only" | "dry";
+  coil_dry_fan_mode?: string;
+  coil_dry_min_cooling_minutes?: number;
+  coil_dry_drain_minutes?: number;
   mold_detection_enabled?: boolean;
   mold_humidity_threshold?: number;
   mold_sustained_minutes?: number;

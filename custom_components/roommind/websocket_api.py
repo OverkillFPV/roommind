@@ -31,6 +31,17 @@ from .services.analytics_service import (
     _safe_float,  # noqa: F401 - re-exported for tests
     build_analytics_data,
 )
+from .utils.device_utils import (
+    COIL_DRY_INHERIT,
+    COIL_DRY_MODE_FAN_ONLY,
+    COIL_DRY_MODES,
+    COIL_DRY_ON,
+    COIL_DRY_OVERRIDES,
+    DEFAULT_COIL_DRY_DRAIN_MINUTES,
+    DEFAULT_COIL_DRY_FAN_MODE,
+    DEFAULT_COIL_DRY_MIN_COOLING_MINUTES,
+    DEFAULT_COIL_DRY_MINUTES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +55,17 @@ def _validate_device_idle_action(device: dict) -> dict:
     """
     if device.get("type") == "ac" and device.get("idle_action") == "low":
         raise vol.Invalid("idle_action='low' is only supported for TRVs (type='trv')")
+    return device
+
+
+def _validate_device_coil_dry(device: dict) -> dict:
+    """Enforce that coil dry is only enabled on ACs.
+
+    A TRV has no evaporator coil, so "on" is meaningless there. "inherit" and
+    "off" stay allowed for both types so a uniform device dict is always valid.
+    """
+    if device.get("type") == "trv" and device.get("coil_dry") == COIL_DRY_ON:
+        raise vol.Invalid("coil_dry='on' is only supported for ACs (type='ac')")
     return device
 
 
@@ -131,6 +153,12 @@ _SETTINGS_SAVE_FIELDS = (
     "schedule_off_action",
     "valve_protection_enabled",
     "valve_protection_interval_days",
+    "coil_dry_enabled",
+    "coil_dry_minutes",
+    "coil_dry_mode",
+    "coil_dry_fan_mode",
+    "coil_dry_min_cooling_minutes",
+    "coil_dry_drain_minutes",
     "mold_detection_enabled",
     "mold_humidity_threshold",
     "mold_sustained_minutes",
@@ -258,6 +286,7 @@ async def websocket_list_rooms(
             "n_observations": live.get("n_observations", 0),
             "blind_position": live.get("blind_position"),
             "cover_auto_paused": live.get("cover_auto_paused", False),
+            "cover_override_until": live.get("cover_override_until"),
             "cover_forced_reason": live.get("cover_forced_reason", ""),
             "active_cover_schedule_index": live.get("active_cover_schedule_index", -1),
             "active_heat_sources": live.get("active_heat_sources"),
@@ -270,6 +299,13 @@ async def websocket_list_rooms(
             "climate_power_max_w": live.get("climate_power_max_w", 0),
             "climate_active_power": live.get("climate_active_power", False),
             "climate_idle_power_w": live.get("climate_idle_power_w"),
+            "compressor_protection_active": live.get("compressor_protection_active", False),
+            "compressor_protection_reason": live.get("compressor_protection_reason"),
+            "coil_dry_active": live.get("coil_dry_active", False),
+            "coil_dry_phase": live.get("coil_dry_phase"),
+            "coil_dry_until": live.get("coil_dry_until"),
+            "coil_dry_entities": live.get("coil_dry_entities", []),
+            "schedule_temp_warnings": live.get("schedule_temp_warnings", []),
         }
         result[area_id] = room_data
 
@@ -298,6 +334,14 @@ async def websocket_list_rooms(
             "schedule_off_action": settings.get("schedule_off_action", "eco"),
             "anyone_home": _compute_anyone_home(hass, settings),
             "valve_protection_enabled": settings.get("valve_protection_enabled", False),
+            "coil_dry_enabled": settings.get("coil_dry_enabled", False),
+            "coil_dry_minutes": settings.get("coil_dry_minutes", DEFAULT_COIL_DRY_MINUTES),
+            "coil_dry_mode": settings.get("coil_dry_mode", COIL_DRY_MODE_FAN_ONLY),
+            "coil_dry_fan_mode": settings.get("coil_dry_fan_mode", DEFAULT_COIL_DRY_FAN_MODE),
+            "coil_dry_min_cooling_minutes": settings.get(
+                "coil_dry_min_cooling_minutes", DEFAULT_COIL_DRY_MIN_COOLING_MINUTES
+            ),
+            "coil_dry_drain_minutes": settings.get("coil_dry_drain_minutes", DEFAULT_COIL_DRY_DRAIN_MINUTES),
             "compressor_groups": settings.get("compressor_groups", []),
         },
     )
@@ -327,8 +371,13 @@ async def websocket_list_rooms(
                     vol.Optional("regulation_offset", default=0.0): vol.All(
                         vol.Coerce(float), vol.Range(min=-5.0, max=5.0)
                     ),
+                    vol.Optional("coil_dry", default=COIL_DRY_INHERIT): vol.In(COIL_DRY_OVERRIDES),
+                    vol.Optional("coil_dry_minutes", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
+                    vol.Optional("coil_dry_mode", default=""): vol.In(["", *COIL_DRY_MODES]),
+                    vol.Optional("coil_dry_fan_mode", default=""): str,
                 },
                 _validate_device_idle_action,
+                _validate_device_coil_dry,
             )
         ],
         vol.Optional("temperature_sensor"): str,
@@ -626,6 +675,12 @@ async def websocket_get_settings(
         vol.Optional("schedule_off_action"): vol.In(["eco", "off"]),
         vol.Optional("valve_protection_enabled"): bool,
         vol.Optional("valve_protection_interval_days"): vol.All(vol.Coerce(int), vol.Range(min=1, max=90)),
+        vol.Optional("coil_dry_enabled"): bool,
+        vol.Optional("coil_dry_minutes"): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+        vol.Optional("coil_dry_mode"): vol.In(COIL_DRY_MODES),
+        vol.Optional("coil_dry_fan_mode"): str,
+        vol.Optional("coil_dry_min_cooling_minutes"): vol.All(vol.Coerce(int), vol.Range(min=1, max=240)),
+        vol.Optional("coil_dry_drain_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=15)),
         vol.Optional("mold_detection_enabled"): bool,
         vol.Optional("mold_humidity_threshold"): vol.All(vol.Coerce(float), vol.Range(min=50, max=90)),
         vol.Optional("mold_sustained_minutes"): vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
@@ -922,6 +977,38 @@ async def websocket_get_diagnostics(
 
 
 # ---------------------------------------------------------------------------
+# Clear cover user override
+# ---------------------------------------------------------------------------
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "roommind/covers/clear_override",
+        vol.Required("area_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_covers_clear_override(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict,
+) -> None:
+    """Clear a user cover override so automatic cover control resumes."""
+    store = hass.data[DOMAIN]["store"]
+    area_id = msg["area_id"]
+    if store.get_room(area_id) is None:
+        connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
+        return
+
+    coordinator = _get_coordinator(hass)
+    if coordinator:
+        coordinator.clear_cover_override(area_id)
+        await coordinator.async_request_refresh()
+
+    connection.send_result(msg["id"], {"success": True})
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -941,3 +1028,4 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_thermal_reset_all)
     websocket_api.async_register_command(hass, websocket_boost_learning)
     websocket_api.async_register_command(hass, websocket_get_diagnostics)
+    websocket_api.async_register_command(hass, websocket_covers_clear_override)

@@ -39,6 +39,7 @@ NORMAL_ROOM_KEYS = {
     "target_temp",
     "heat_target",
     "cool_target",
+    "schedule_temp_warnings",
     "mode",
     "commanded_mode",
     "heating_power",
@@ -64,10 +65,17 @@ NORMAL_ROOM_KEYS = {
     "n_observations",
     "blind_position",
     "cover_auto_paused",
+    "cover_override_until",
     "cover_forced_reason",
     "cover_reason",
     "active_cover_schedule_index",
     "active_heat_sources",
+    "compressor_protection_active",
+    "compressor_protection_reason",
+    "coil_dry_active",
+    "coil_dry_phase",
+    "coil_dry_until",
+    "coil_dry_entities",
 }
 
 OUTDOOR_ROOM_KEYS = {
@@ -78,6 +86,7 @@ OUTDOOR_ROOM_KEYS = {
     "target_temp",
     "heat_target",
     "cool_target",
+    "schedule_temp_warnings",
     "mode",
     "heating_power",
     "device_setpoint",
@@ -105,6 +114,12 @@ OUTDOOR_ROOM_KEYS = {
     "active_cover_schedule_index",
     "q_occupancy",
     "active_heat_sources",
+    "compressor_protection_active",
+    "compressor_protection_reason",
+    "coil_dry_active",
+    "coil_dry_phase",
+    "coil_dry_until",
+    "coil_dry_entities",
 }
 
 
@@ -166,6 +181,60 @@ class TestProcessRoomSnapshot:
         # At target, bang-bang controller should be idle
         assert result["mode"] == "idle"
         assert result["heating_power"] == 0
+
+    @pytest.mark.asyncio
+    async def test_device_setpoint_mixed_direct_proportional_cooling(self, hass, mock_config_entry):
+        """AC (direct) + TRV (proportional) in the same room, cooling mode.
+
+        Regression test: device_setpoint must reflect what async_apply()
+        actually sends to the AC (the real cool_target), not the TRV's
+        presence dragging the whole room into the proportional boost
+        formula. Before the fix, this returned ~16.0 (AC_COOLING_BOOST_TARGET)
+        instead of the real target of 24.0.
+        """
+        room = {
+            **SAMPLE_ROOM,
+            "area_id": "bedroom_mixed_xyz",
+            "thermostats": ["climate.bedroom_trv"],
+            "acs": ["climate.bedroom_ac"],
+            "devices": [
+                {
+                    "entity_id": "climate.bedroom_trv",
+                    "type": "trv",
+                    "role": "auto",
+                    "heating_system_type": "radiator",
+                    "setpoint_mode": "proportional",
+                    "idle_action": "off",
+                },
+                {
+                    "entity_id": "climate.bedroom_ac",
+                    "type": "ac",
+                    "role": "auto",
+                    "heating_system_type": "",
+                    "setpoint_mode": "direct",
+                    "idle_action": "fan_only",
+                },
+            ],
+            "climate_mode": "cool_only",
+        }
+        coordinator, store = _setup_coordinator(
+            hass,
+            mock_config_entry,
+            {"bedroom_mixed_xyz": room},
+        )
+        # current_temp (26.0) well above comfort_cool (24.0) -> strong cooling
+        # demand (power_fraction near 1.0), which is what previously drove the
+        # proportional formula all the way down to the boost floor.
+        hass.states.get = MagicMock(
+            side_effect=make_mock_states_get(temp="26.0", humidity="55.0"),
+        )
+
+        settings = store.get_settings()
+        result = await coordinator._async_process_room(room, settings, [])
+
+        assert result["mode"] == "cooling"
+        assert result["cool_target"] == pytest.approx(24.0)
+        assert result["device_setpoint"] == pytest.approx(24.0)
 
     @pytest.mark.asyncio
     async def test_window_open(self, hass, mock_config_entry):

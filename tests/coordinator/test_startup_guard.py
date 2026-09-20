@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -179,4 +180,59 @@ def test_any_member_room_waiting_skips_outdoor_and_disabled(hass, mock_config_en
         "balcony": {**AC_ROOM, "area_id": "balcony", "is_outdoor": True},
         "cellar": {**AC_ROOM, "area_id": "cellar", "climate_control_enabled": False},
     }
+    assert coordinator._any_member_room_waiting(["climate.ac_living"], rooms) is False
+
+
+@pytest.mark.asyncio
+async def test_startup_guard_expires_after_staleness_window(hass, mock_config_entry):
+    """A sensor that never reports after restart must not hold the guard forever."""
+    store = _make_store_mock({"living_room_abc12345": SAMPLE_ROOM})
+    hass.data = {"roommind": {"store": store}}
+
+    hass.states.get = MagicMock(side_effect=make_mock_states_get(temp=None))
+    hass.services.async_call = AsyncMock()
+    coordinator = _create_coordinator(hass, mock_config_entry)
+    await coordinator._async_update_data()
+    assert _climate_calls(hass) == []
+
+    coordinator._startup_ts = time.monotonic() - MAX_SENSOR_STALENESS - 1
+    result = await coordinator._async_update_data()
+
+    assert result["rooms"]["living_room_abc12345"]["mode"] == MODE_IDLE
+    off_calls = [
+        c
+        for c in _climate_calls(hass, "climate.living_room")
+        if c.args[1] == "set_hvac_mode" and c.args[2].get("hvac_mode") == "off"
+    ]
+    assert len(off_calls) == 1, "expired guard must apply the same safety shutdown as a dropout"
+
+
+@pytest.mark.asyncio
+async def test_startup_guard_expiry_warns_once(hass, mock_config_entry, caplog):
+    """Guard expiry logs a single warning per room, not one per cycle."""
+    store = _make_store_mock({"living_room_abc12345": SAMPLE_ROOM})
+    hass.data = {"roommind": {"store": store}}
+
+    hass.states.get = MagicMock(side_effect=make_mock_states_get(temp=None))
+    hass.services.async_call = AsyncMock()
+    coordinator = _create_coordinator(hass, mock_config_entry)
+    coordinator._startup_ts = time.monotonic() - MAX_SENSOR_STALENESS - 1
+
+    with caplog.at_level(logging.WARNING):
+        await coordinator._async_update_data()
+        await coordinator._async_update_data()
+
+    warnings = [
+        r for r in caplog.records if r.levelno == logging.WARNING and "no temperature reading" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_any_member_room_waiting_expires_with_grace_period(hass, mock_config_entry):
+    """Compressor master guard uses the same startup grace period."""
+    coordinator = _create_coordinator(hass, mock_config_entry)
+    rooms = {"living": {**AC_ROOM, "area_id": "living"}}
+    assert coordinator._any_member_room_waiting(["climate.ac_living"], rooms) is True
+
+    coordinator._startup_ts = time.monotonic() - MAX_SENSOR_STALENESS - 1
     assert coordinator._any_member_room_waiting(["climate.ac_living"], rooms) is False

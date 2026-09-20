@@ -10,6 +10,7 @@ from custom_components.roommind.const import DOMAIN
 from custom_components.roommind.websocket_api import (
     _csv_to_points,
     _safe_float,
+    websocket_covers_clear_override,
     websocket_delete_room,
     websocket_get_analytics,
     websocket_get_diagnostics,
@@ -38,6 +39,7 @@ _thermal_reset = websocket_thermal_reset.__wrapped__
 _thermal_reset_all = websocket_thermal_reset_all.__wrapped__
 _get_analytics = websocket_get_analytics.__wrapped__
 _get_diagnostics = websocket_get_diagnostics.__wrapped__
+_covers_clear_override = websocket_covers_clear_override.__wrapped__
 
 
 @pytest.fixture
@@ -85,6 +87,12 @@ async def test_list_rooms_empty(ws_hass, store, connection):
             "schedule_off_action": "eco",
             "anyone_home": True,
             "valve_protection_enabled": False,
+            "coil_dry_enabled": False,
+            "coil_dry_minutes": 20,
+            "coil_dry_mode": "fan_only",
+            "coil_dry_fan_mode": "low",
+            "coil_dry_min_cooling_minutes": 10,
+            "coil_dry_drain_minutes": 0,
             "compressor_groups": [],
         },
     )
@@ -917,6 +925,165 @@ async def test_list_rooms_includes_active_schedule_index(ws_hass, store, connect
 
 
 @pytest.mark.asyncio
+async def test_list_rooms_includes_compressor_protection_status(ws_hass, store, connection):
+    """Verify compressor_protection_active/reason pass through from the
+    coordinator into list_rooms' live data.
+
+    Regression test: these fields were added to the coordinator's room-state
+    dict but the websocket_list_rooms handler builds `live` from an explicit
+    field allow-list, so they were silently dropped until this handler was
+    also updated (#386).
+    """
+    await store.async_load()
+
+    save_msg = {
+        "id": 2,
+        "type": "roommind/rooms/save",
+        "area_id": "kinderzimmer",
+        "thermostats": ["climate.kz_trv"],
+        "temperature_sensor": "sensor.kz_temp",
+    }
+    await _save_room(ws_hass, connection, save_msg)
+    connection.send_result.reset_mock()
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.rooms = {
+        "kinderzimmer": {
+            "current_temp": 25.0,
+            "target_temp": 25.0,
+            "mode": "idle",
+            "compressor_protection_active": True,
+            "compressor_protection_reason": "min_off",
+        }
+    }
+    mock_coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = mock_coordinator
+
+    list_msg = {"id": 3, "type": "roommind/rooms/list"}
+    await _list_rooms(ws_hass, connection, list_msg)
+
+    connection.send_result.assert_called_once()
+    call_args = connection.send_result.call_args
+    live = call_args[0][1]["rooms"]["kinderzimmer"]["live"]
+    assert live["compressor_protection_active"] is True
+    assert live["compressor_protection_reason"] == "min_off"
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_includes_coil_dry_status(ws_hass, store, connection):
+    """Verify the four coil_dry_* fields pass through into live data.
+
+    Same allow-list trap as the compressor fields above (#386): the handler
+    builds ``live`` from an explicit field list, so coordinator state that is
+    not named here is silently dropped.
+    """
+    await store.async_load()
+
+    save_msg = {
+        "id": 2,
+        "type": "roommind/rooms/save",
+        "area_id": "kueche",
+        "acs": ["climate.kueche_ac"],
+        "temperature_sensor": "sensor.kueche_temp",
+    }
+    await _save_room(ws_hass, connection, save_msg)
+    connection.send_result.reset_mock()
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.rooms = {
+        "kueche": {
+            "current_temp": 24.0,
+            "target_temp": 24.0,
+            "mode": "idle",
+            "coil_dry_active": True,
+            "coil_dry_phase": "blow",
+            "coil_dry_until": 1700.0,
+            "coil_dry_entities": ["climate.kueche_ac"],
+        }
+    }
+    mock_coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = mock_coordinator
+
+    list_msg = {"id": 3, "type": "roommind/rooms/list"}
+    await _list_rooms(ws_hass, connection, list_msg)
+
+    connection.send_result.assert_called_once()
+    live = connection.send_result.call_args[0][1]["rooms"]["kueche"]["live"]
+    assert live["coil_dry_active"] is True
+    assert live["coil_dry_phase"] == "blow"
+    assert live["coil_dry_until"] == 1700.0
+    assert live["coil_dry_entities"] == ["climate.kueche_ac"]
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_coil_dry_defaults_without_coordinator_state(ws_hass, store, connection):
+    """A room the coordinator has not run yet reports the inactive defaults."""
+    await store.async_load()
+
+    save_msg = {
+        "id": 2,
+        "type": "roommind/rooms/save",
+        "area_id": "bad",
+        "acs": ["climate.bad_ac"],
+        "temperature_sensor": "sensor.bad_temp",
+    }
+    await _save_room(ws_hass, connection, save_msg)
+    connection.send_result.reset_mock()
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.rooms = {}
+    mock_coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = mock_coordinator
+
+    list_msg = {"id": 3, "type": "roommind/rooms/list"}
+    await _list_rooms(ws_hass, connection, list_msg)
+
+    live = connection.send_result.call_args[0][1]["rooms"]["bad"]["live"]
+    assert live["coil_dry_active"] is False
+    assert live["coil_dry_phase"] is None
+    assert live["coil_dry_until"] is None
+    assert live["coil_dry_entities"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_includes_cover_override_until(ws_hass, store, connection):
+    """Verify cover_override_until appears in live data from list_rooms."""
+    await store.async_load()
+
+    save_msg = {
+        "id": 2,
+        "type": "roommind/rooms/save",
+        "area_id": "schlafzimmer",
+        "thermostats": ["climate.sz_trv"],
+        "temperature_sensor": "sensor.sz_temp",
+        "covers": ["cover.sz_rollo"],
+    }
+    await _save_room(ws_hass, connection, save_msg)
+    connection.send_result.reset_mock()
+
+    mock_coordinator = MagicMock()
+    mock_coordinator.rooms = {
+        "schlafzimmer": {
+            "current_temp": 20.0,
+            "target_temp": 21.0,
+            "mode": "idle",
+            "cover_auto_paused": True,
+            "cover_override_until": 1751700000.0,
+        }
+    }
+    mock_coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = mock_coordinator
+
+    list_msg = {"id": 3, "type": "roommind/rooms/list"}
+    await _list_rooms(ws_hass, connection, list_msg)
+
+    connection.send_result.assert_called_once()
+    live = connection.send_result.call_args[0][1]["rooms"]["schlafzimmer"]["live"]
+    assert live["cover_auto_paused"] is True
+    assert live["cover_override_until"] == 1751700000.0
+
+
+@pytest.mark.asyncio
 async def test_save_room_with_window_sensors(ws_hass, store, connection):
     """Saving a room with window_sensors persists them; default is empty list."""
     await store.async_load()
@@ -1664,14 +1831,14 @@ async def test_analytics_model_has_occupancy_sensors_false(ws_hass, store, conne
 
 
 def test_register_websocket_commands(hass):
-    """async_register_websocket_commands registers all 11 commands."""
+    """async_register_websocket_commands registers all 13 commands."""
     from unittest.mock import patch
 
     from custom_components.roommind.websocket_api import async_register_websocket_commands
 
     with patch("custom_components.roommind.websocket_api.websocket_api.async_register_command") as mock_reg:
         async_register_websocket_commands(hass)
-        assert mock_reg.call_count == 12
+        assert mock_reg.call_count == 13
 
 
 # ---------------------------------------------------------------------------
@@ -2686,3 +2853,180 @@ async def test_get_diagnostics_no_config_entry(ws_hass, store, connection):
 
     connection.send_error.assert_called_once()
     assert connection.send_error.call_args[0][1] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_covers_clear_override_unknown_room(ws_hass, store, connection):
+    await store.async_load()
+    msg = {"id": 7, "type": "roommind/covers/clear_override", "area_id": "nope"}
+    await _covers_clear_override(ws_hass, connection, msg)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_covers_clear_override_success(ws_hass, store, connection):
+    await store.async_load()
+    await store.async_save_room("lr", {"covers": ["cover.lr"]})
+    coordinator = MagicMock()
+    coordinator.clear_cover_override = MagicMock()
+    coordinator.async_request_refresh = AsyncMock()
+    ws_hass.data[DOMAIN]["coordinator"] = coordinator
+    msg = {"id": 8, "type": "roommind/covers/clear_override", "area_id": "lr"}
+    await _covers_clear_override(ws_hass, connection, msg)
+    coordinator.clear_cover_override.assert_called_once_with("lr")
+    coordinator.async_request_refresh.assert_awaited_once()
+    connection.send_result.assert_called_once_with(8, {"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Coil dry (evaporator drying) schema tests (Task 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_coil_dry_device_schema_defaults():
+    """Absent coil dry fields get their inherit defaults."""
+    schema = websocket_save_room._ws_schema  # set by the websocket_command decorator
+    result = schema(
+        {
+            "type": "roommind/rooms/save",
+            "id": 1,
+            "area_id": "living_room",
+            "devices": [{"entity_id": "climate.ac", "type": "ac"}],
+        }
+    )
+    dev = result["devices"][0]
+    assert dev["coil_dry"] == "inherit"
+    assert dev["coil_dry_minutes"] == 0
+    assert dev["coil_dry_mode"] == ""
+    assert dev["coil_dry_fan_mode"] == ""
+
+
+@pytest.mark.asyncio
+async def test_coil_dry_rejects_on_for_trv():
+    """A TRV has no evaporator coil."""
+    import voluptuous as vol
+
+    schema = websocket_save_room._ws_schema
+    with pytest.raises(vol.Invalid):
+        schema(
+            {
+                "type": "roommind/rooms/save",
+                "id": 1,
+                "area_id": "living_room",
+                "devices": [{"entity_id": "climate.trv", "type": "trv", "coil_dry": "on"}],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_coil_dry_allows_off_for_trv():
+    """'off' and 'inherit' are harmless on a TRV and must not be rejected."""
+    schema = websocket_save_room._ws_schema
+    result = schema(
+        {
+            "type": "roommind/rooms/save",
+            "id": 1,
+            "area_id": "living_room",
+            "devices": [{"entity_id": "climate.trv", "type": "trv", "coil_dry": "off"}],
+        }
+    )
+    assert result["devices"][0]["coil_dry"] == "off"
+
+
+@pytest.mark.asyncio
+async def test_validate_device_coil_dry_unit():
+    """Direct unit test of the real validator — catches regressions if the function changes."""
+    import voluptuous as vol
+
+    from custom_components.roommind.websocket_api import _validate_device_coil_dry
+
+    # TRV + off is allowed
+    assert _validate_device_coil_dry({"type": "trv", "coil_dry": "off"}) == {
+        "type": "trv",
+        "coil_dry": "off",
+    }
+    # AC + on is allowed
+    assert _validate_device_coil_dry({"type": "ac", "coil_dry": "on"}) == {
+        "type": "ac",
+        "coil_dry": "on",
+    }
+    # TRV + on is rejected
+    with pytest.raises(vol.Invalid):
+        _validate_device_coil_dry({"type": "trv", "coil_dry": "on"})
+
+
+@pytest.mark.asyncio
+async def test_coil_dry_settings_schema_ranges():
+    """Out-of-range values are rejected."""
+    import voluptuous as vol
+
+    schema = websocket_save_settings._ws_schema
+    schema({"type": "roommind/settings/save", "id": 1, "coil_dry_minutes": 60})
+    with pytest.raises(vol.Invalid):
+        schema({"type": "roommind/settings/save", "id": 1, "coil_dry_minutes": 61})
+    with pytest.raises(vol.Invalid):
+        schema({"type": "roommind/settings/save", "id": 1, "coil_dry_drain_minutes": 16})
+    with pytest.raises(vol.Invalid):
+        schema({"type": "roommind/settings/save", "id": 1, "coil_dry_mode": "heat"})
+    # 0 is valid for drain (= phase disabled)
+    schema({"type": "roommind/settings/save", "id": 1, "coil_dry_drain_minutes": 0})
+
+
+@pytest.mark.asyncio
+async def test_coil_dry_state_not_writable_via_ws():
+    """coil_dry_state is server-side runtime state, clients must not set it."""
+    import voluptuous as vol
+
+    schema = websocket_save_settings._ws_schema
+    with pytest.raises(vol.Invalid):
+        schema({"type": "roommind/settings/save", "id": 1, "coil_dry_state": {}})
+
+
+@pytest.mark.asyncio
+async def test_save_settings_persists_coil_dry_keys(ws_hass, store, connection):
+    """settings/save must actually persist coil_dry_* — schema acceptance alone is not enough.
+
+    _SETTINGS_SAVE_FIELDS is a separate allowlist that filters msg into the changes
+    dict handed to the store; a key can pass schema validation and still never reach
+    storage if it is missing from that tuple.
+    """
+    await store.async_load()
+    msg = {
+        "id": 5,
+        "type": "roommind/settings/save",
+        "coil_dry_enabled": True,
+        "coil_dry_minutes": 30,
+        "coil_dry_mode": "dry",
+        "coil_dry_fan_mode": "high",
+        "coil_dry_min_cooling_minutes": 15,
+        "coil_dry_drain_minutes": 5,
+    }
+    await _save_settings(ws_hass, connection, msg)
+
+    connection.send_result.assert_called_once()
+    settings = connection.send_result.call_args[0][1]["settings"]
+    assert settings["coil_dry_enabled"] is True
+    assert settings["coil_dry_minutes"] == 30
+    assert settings["coil_dry_mode"] == "dry"
+    assert settings["coil_dry_fan_mode"] == "high"
+    assert settings["coil_dry_min_cooling_minutes"] == 15
+    assert settings["coil_dry_drain_minutes"] == 5
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_defaults_coil_dry_settings(ws_hass, store, connection):
+    """rooms/list surfaces the six global coil dry settings with their documented defaults."""
+    await store.async_load()
+
+    msg = {"id": 1, "type": "roommind/rooms/list"}
+    await _list_rooms(ws_hass, connection, msg)
+
+    result = connection.send_result.call_args[0][1]
+    assert result["coil_dry_enabled"] is False
+    assert result["coil_dry_minutes"] == 20
+    assert result["coil_dry_mode"] == "fan_only"
+    assert result["coil_dry_fan_mode"] == "low"
+    assert result["coil_dry_min_cooling_minutes"] == 10
+    assert result["coil_dry_drain_minutes"] == 0

@@ -100,22 +100,28 @@ export class RsAnalyticsModel extends LitElement {
             </div>
             <div class="control-mode-badge ${mpcActive ? "mpc" : "bangbang"}">
               <ha-icon icon=${mpcActive ? "mdi:brain" : "mdi:school-outline"}></ha-icon>
-              ${mpcActive
-                ? localize("analytics.control_mode_mpc", l)
-                : localize("analytics.control_mode_bangbang", l)}
+              ${
+                mpcActive
+                  ? localize("analytics.control_mode_mpc", l)
+                  : localize("analytics.control_mode_bangbang", l)
+              }
             </div>
-            ${this._expandedStat === "confidence"
-              ? html`<div class="info-panel stat-info-panel">
-                  <strong>${localize("analytics.confidence", l)}</strong>
-                  ${localize("analytics.info.confidence", l)}
-                </div>`
-              : nothing}
-            ${this._expandedStat === "data_points"
-              ? html`<div class="info-panel stat-info-panel">
-                  <strong>${localize("analytics.data_points", l)}</strong>
-                  ${localize("analytics.info.data_points", l)}
-                </div>`
-              : nothing}
+            ${
+              this._expandedStat === "confidence"
+                ? html`<div class="info-panel stat-info-panel">
+                    <strong>${localize("analytics.confidence", l)}</strong>
+                    ${localize("analytics.info.confidence", l)}
+                  </div>`
+                : nothing
+            }
+            ${
+              this._expandedStat === "data_points"
+                ? html`<div class="info-panel stat-info-panel">
+                    <strong>${localize("analytics.data_points", l)}</strong>
+                    ${localize("analytics.info.data_points", l)}
+                  </div>`
+                : nothing
+            }
           </div>
 
           <div class="model-grid">
@@ -232,31 +238,35 @@ export class RsAnalyticsModel extends LitElement {
               "",
               "analytics.info.accuracy_idle",
             )}
-            ${canHeat
-              ? stat(
-                  "accuracy_heating",
-                  hasHeated && predStdHeat != null
-                    ? "\u00B1" +
-                        toDisplayDelta(predStdHeat, this.hass).toFixed(2) +
-                        tempUnit(this.hass)
-                    : ph,
-                  "analytics.accuracy_heating",
-                  "",
-                  "analytics.info.accuracy_heating",
-                )
-              : nothing}
+            ${
+              canHeat
+                ? stat(
+                    "accuracy_heating",
+                    hasHeated && predStdHeat != null
+                      ? "\u00B1" +
+                          toDisplayDelta(predStdHeat, this.hass).toFixed(2) +
+                          tempUnit(this.hass)
+                      : ph,
+                    "analytics.accuracy_heating",
+                    "",
+                    "analytics.info.accuracy_heating",
+                  )
+                : nothing
+            }
           </div>
-          ${this._expandedStat && statItems.find((s) => s.id === this._expandedStat)
-            ? html`<div class="info-panel stat-info-panel">
-                <strong
-                  >${localize(
-                    statItems.find((s) => s.id === this._expandedStat)!.labelKey,
-                    l,
-                  )}</strong
-                >
-                ${localize(statItems.find((s) => s.id === this._expandedStat)!.infoKey, l)}
-              </div>`
-            : nothing}
+          ${
+            this._expandedStat && statItems.find((s) => s.id === this._expandedStat)
+              ? html`<div class="info-panel stat-info-panel">
+                  <strong
+                    >${localize(
+                      statItems.find((s) => s.id === this._expandedStat)!.labelKey,
+                      l,
+                    )}</strong
+                  >
+                  ${localize(statItems.find((s) => s.id === this._expandedStat)!.infoKey, l)}
+                </div>`
+              : nothing
+          }
         </div>
       </ha-card>
     `;
