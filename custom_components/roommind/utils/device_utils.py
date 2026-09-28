@@ -28,6 +28,10 @@ IDLE_ACTION_SETBACK = "setback"
 IDLE_ACTION_LOW = "low"
 DEFAULT_IDLE_SETBACK_OFFSET = 2.0
 
+# Fan speed used while actively heating/cooling (not idling). "" = leave the
+# device's own fan control alone (e.g. its native auto fan curve).
+DEFAULT_ACTIVE_FAN_MODE = ""
+
 SETPOINT_MODE_PROPORTIONAL = "proportional"
 SETPOINT_MODE_DIRECT = "direct"
 
@@ -108,6 +112,7 @@ def legacy_to_devices(
                 "heating_system_type": heating_system_type,
                 "idle_action": IDLE_ACTION_OFF,
                 "idle_fan_mode": DEFAULT_IDLE_FAN_MODE,
+                "active_fan_mode": DEFAULT_ACTIVE_FAN_MODE,
                 "setpoint_mode": SETPOINT_MODE_PROPORTIONAL,
                 "regulation_offset": DEFAULT_REGULATION_OFFSET,
                 "coil_dry": COIL_DRY_INHERIT,
@@ -125,6 +130,7 @@ def legacy_to_devices(
                 "heating_system_type": "",
                 "idle_action": IDLE_ACTION_OFF,
                 "idle_fan_mode": DEFAULT_IDLE_FAN_MODE,
+                "active_fan_mode": DEFAULT_ACTIVE_FAN_MODE,
                 "setpoint_mode": SETPOINT_MODE_PROPORTIONAL,
                 "regulation_offset": DEFAULT_REGULATION_OFFSET,
                 "coil_dry": COIL_DRY_INHERIT,
@@ -271,6 +277,17 @@ def get_idle_action(devices: list[dict], entity_id: str) -> tuple[str, str]:
         dev.get("idle_action", IDLE_ACTION_OFF),
         dev.get("idle_fan_mode", DEFAULT_IDLE_FAN_MODE),
     )
+
+
+def get_active_fan_mode(devices: list[dict], entity_id: str) -> str:
+    """Return the configured fan speed for active heating/cooling.
+
+    "" means leave the device's own fan control alone.
+    """
+    dev = get_device_by_eid(devices, entity_id)
+    if dev is None:
+        return DEFAULT_ACTIVE_FAN_MODE
+    return dev.get("active_fan_mode", DEFAULT_ACTIVE_FAN_MODE)
 
 
 def get_direct_setpoint_eids(devices: list[dict]) -> set[str]:

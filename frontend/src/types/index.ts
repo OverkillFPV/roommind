@@ -89,6 +89,7 @@ export interface DeviceConfig {
   heating_system_type?: string;
   idle_action?: "off" | "fan_only" | "setback" | "low"; // default "off"
   idle_fan_mode?: string; // default "low"
+  active_fan_mode?: string; // fan speed while actively heating/cooling; "" = leave device's own fan control alone
   setpoint_mode?: "proportional" | "direct"; // default "proportional"
   regulation_offset?: number; // signed °C, default 0; biases setpoint toward action
   coil_dry?: "inherit" | "on" | "off"; // default "inherit"

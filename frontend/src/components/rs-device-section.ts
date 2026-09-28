@@ -416,6 +416,7 @@ export class RsDeviceSection extends LitElement {
       device?.idle_action === "setback" ||
       device?.idle_action === "low";
     const showDirectBadge = device?.setpoint_mode === "direct" && !!this.selectedTempSensor;
+    const showActiveFanBadge = !!device?.active_fan_mode;
 
     return html`
       <div class="view-row">
@@ -441,6 +442,13 @@ export class RsDeviceSection extends LitElement {
           showDirectBadge
             ? html`<span class="valve-exclude-badge">
                 ${localize("devices.setpoint_mode_direct", this.hass.language)}
+              </span>`
+            : nothing
+        }
+        ${
+          showActiveFanBadge
+            ? html`<span class="valve-exclude-badge">
+                ${localize("devices.active_fan_mode", this.hass.language)}: ${device!.active_fan_mode}
               </span>`
             : nothing
         }
@@ -681,6 +689,7 @@ export class RsDeviceSection extends LitElement {
     const friendlyName = (entityState?.attributes?.friendly_name as string) || entityId;
     const hvacModes = (entityState?.attributes?.hvac_modes ?? []) as string[];
     const supportsFanOnly = hvacModes.includes("fan_only");
+    const fanModes = (entityState?.attributes?.fan_modes ?? []) as string[];
     const isExcluded = this.valveProtectionExclude.has(entityId);
     const lang = this.hass.language;
 
@@ -781,6 +790,37 @@ export class RsDeviceSection extends LitElement {
                         )}
                       </ha-select>
                     </div>`
+                  : nothing
+              }
+
+              ${
+                fanModes.length > 0
+                  ? html`
+                      <div class="detail-field with-info">
+                        <ha-select
+                          .label=${localize("devices.active_fan_mode", lang)}
+                          .value=${device.active_fan_mode ? device.active_fan_mode : "__auto__"}
+                          .options=${[
+                            { value: "__auto__", label: localize("devices.active_fan_mode_auto", lang) },
+                            ...fanModes.map((fm) => ({ value: fm, label: fm })),
+                          ]}
+                          @selected=${(e: Event) => {
+                            const v = getSelectValue(e);
+                            this._onActiveFanModeChange(entityId, v === "__auto__" ? "" : v);
+                          }}
+                          @closed=${(e: Event) => e.stopPropagation()}
+                          fixedMenuPosition
+                        >
+                          <ha-list-item value="__auto__"
+                            >${localize("devices.active_fan_mode_auto", lang)}</ha-list-item
+                          >
+                          ${fanModes.map(
+                            (fm) => html`<ha-list-item value="${fm}">${fm}</ha-list-item>`,
+                          )}
+                        </ha-select>
+                        <rs-info-icon .text=${localize("devices.active_fan_mode_hint", lang)}></rs-info-icon>
+                      </div>
+                    `
                   : nothing
               }
 
@@ -1097,6 +1137,13 @@ export class RsDeviceSection extends LitElement {
   private _onIdleFanModeChange(entityId: string, fanMode: string): void {
     const newDevices = this.devices.map((d) =>
       d.entity_id === entityId ? { ...d, idle_fan_mode: fanMode } : d,
+    );
+    this._fireDeviceChanged(newDevices);
+  }
+
+  private _onActiveFanModeChange(entityId: string, fanMode: string): void {
+    const newDevices = this.devices.map((d) =>
+      d.entity_id === entityId ? { ...d, active_fan_mode: fanMode } : d,
     );
     this._fireDeviceChanged(newDevices);
   }

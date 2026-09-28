@@ -69,6 +69,7 @@ def test_legacy_to_devices_basic():
         "heating_system_type": "",
         "idle_action": "off",
         "idle_fan_mode": "low",
+        "active_fan_mode": "",
         "setpoint_mode": "proportional",
         "regulation_offset": 0.0,
         "coil_dry": "inherit",

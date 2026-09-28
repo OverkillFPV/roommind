@@ -40,6 +40,7 @@ from ..utils.device_utils import (
     IDLE_ACTION_OFF,
     IDLE_ACTION_SETBACK,
     get_ac_eids,
+    get_active_fan_mode,
     get_direct_setpoint_eids,
     get_idle_action,
     get_regulation_offset,
@@ -64,6 +65,11 @@ _SENTINEL: object = object()  # default marker for backward-compat keyword detec
 # resets on integration reload (module reimport).
 _last_commands: dict[str, dict[str, Any]] = {}
 _setpoint_override_warned: set[str] = set()
+
+# hvac_modes that represent active heating/cooling, where a configured
+# active_fan_mode should be applied (as opposed to "off"/"fan_only", which
+# have their own dedicated fan-mode handling).
+_ACTIVE_FAN_HVAC_MODES = {"heat", "cool", "heat_cool", "auto"}
 
 
 def _cache_entry(service: str, data: dict) -> dict[str, Any]:
@@ -101,6 +107,59 @@ def clear_command_cache() -> None:
     """Clear the sent-command cache (for tests)."""
     _last_commands.clear()
     _setpoint_override_warned.clear()
+
+
+async def _apply_active_fan_mode(
+    hass: HomeAssistant,
+    entity_id: str,
+    devices: list[dict],
+    *,
+    area_id: str = "unknown",
+) -> None:
+    """Set the configured fan speed while a device is actively heating/cooling.
+
+    Counterpart to the idle_fan_mode handling in async_idle_device, but for
+    hvac_mode heat/cool/heat_cool/auto. No-op when active_fan_mode is unset
+    ("" = leave the device's own fan control alone) or unsupported.
+    """
+    fan_mode = get_active_fan_mode(devices, entity_id)
+    if not fan_mode:
+        return
+
+    state = hass.states.get(entity_id)
+    if state is None:
+        return
+
+    fan_modes: list[str] = state.attributes.get("fan_modes") or []
+    if fan_mode not in fan_modes:
+        _LOGGER.debug(
+            "Area '%s': device '%s' does not support fan_mode '%s' (available: %s)",
+            area_id,
+            entity_id,
+            fan_mode,
+            fan_modes,
+        )
+        return
+
+    if state.attributes.get("fan_mode") == fan_mode:
+        return
+
+    try:
+        await hass.services.async_call(
+            "climate",
+            "set_fan_mode",
+            {"entity_id": entity_id, "fan_mode": fan_mode},
+            blocking=True,
+            context=make_roommind_context(),
+        )
+    except Exception:  # noqa: BLE001
+        _LOGGER.warning(
+            "Area '%s': climate.set_fan_mode('%s') failed on '%s'",
+            area_id,
+            fan_mode,
+            entity_id,
+            exc_info=True,
+        )
 
 
 def _resolve_idle_setpoint(
@@ -1762,6 +1821,12 @@ class MPCController:
                     resolved,
                 )
                 data = {**data, "hvac_mode": resolved}
+
+        # Apply the device's configured fan speed for active heating/cooling.
+        # Independent of the redundancy/skip logic below: the hvac_mode may
+        # already be correct while the fan speed still needs to be corrected.
+        if service == "set_hvac_mode" and eid and data.get("hvac_mode") in _ACTIVE_FAN_HVAC_MODES:
+            await _apply_active_fan_mode(self.hass, eid, self._devices, area_id=self._area_id)
 
         # Resolve hvac_mode bundled with set_temperature (#337).  Sending the
         # mode atomically with the temperature prevents integrations that

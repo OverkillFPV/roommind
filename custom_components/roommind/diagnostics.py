@@ -44,6 +44,7 @@ def _build_device_states(hass: HomeAssistant, devices: list[dict]) -> list[dict[
             "role": dev.get("role", ""),
             "idle_action": dev.get("idle_action", "off"),
             "idle_fan_mode": dev.get("idle_fan_mode", ""),
+            "active_fan_mode": dev.get("active_fan_mode", ""),
             "coil_dry": dev.get("coil_dry", "inherit"),
             "coil_dry_minutes": dev.get("coil_dry_minutes", 0),
             "coil_dry_mode": dev.get("coil_dry_mode", ""),
