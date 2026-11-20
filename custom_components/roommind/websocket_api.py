@@ -13,18 +13,20 @@ from homeassistant.core import HomeAssistant, callback
 from .const import (
     CLIMATE_MODES,
     CONFLICT_RESOLUTIONS,
-    DEFAULT_COMFORT_COOL,
-    DEFAULT_COMFORT_HEAT,
+    CONTROL_MODE_BANGBANG,
+    CONTROL_MODE_MPC,
     DEFAULT_COMPRESSOR_MIN_OFF_MINUTES,
     DEFAULT_COMPRESSOR_MIN_RUN_MINUTES,
     DEFAULT_CONFLICT_RESOLUTION,
-    DEFAULT_ECO_COOL,
-    DEFAULT_ECO_HEAT,
+    DEFAULT_CONTROL_MODE,
     DOMAIN,
+    MIN_OCCUPANCY_ECO_DELAY_MINUTES,
+    OVERRIDE_CUSTOM,
     OVERRIDE_TYPES,
     build_override_live,
     is_override_suppressed,
 )
+from .control.direct_valve import async_release_valve
 from .services.analytics_service import (
     _compute_target_forecast,  # noqa: F401 - re-exported for tests
     _csv_to_points,  # noqa: F401 - re-exported for tests
@@ -41,7 +43,13 @@ from .utils.device_utils import (
     DEFAULT_COIL_DRY_FAN_MODE,
     DEFAULT_COIL_DRY_MIN_COOLING_MINUTES,
     DEFAULT_COIL_DRY_MINUTES,
+    SETPOINT_OFFSET_MAX,
+    SETPOINT_OFFSET_MIN,
+    VALVE_CLOSING_MODES,
+    ValveEntities,
+    get_valve_entities,
 )
+from .utils.schedule_utils import mask_override_band, override_preset_band
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,6 +77,25 @@ def _validate_device_coil_dry(device: dict) -> dict:
     return device
 
 
+def _number_entity_or_empty(value: object) -> str:
+    """A ``number.*`` entity id, or "" for none."""
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not value.startswith("number."):
+        raise vol.Invalid("must be a number entity")
+    return value
+
+
+def _validate_device_valve(device: dict) -> dict:
+    """Direct valve control (#413) is for TRVs; it takes effect once both degree entities are set."""
+    opening, closing = device.get("valve_opening_entity"), device.get("valve_closing_entity")
+    if (opening or closing) and device.get("type") != "trv":
+        raise vol.Invalid("direct valve control is only supported for TRVs (type='trv')")
+    if device.get("valve_closing_entity") and device.get("valve_closing_entity") == device.get("valve_opening_entity"):
+        raise vol.Invalid("valve_opening_entity and valve_closing_entity must differ")
+    return device
+
+
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api import ActiveConnection
 
@@ -91,6 +118,9 @@ _ROOM_SAVE_FIELDS = (
     "aux_heat_sensors",
     "climate_power_sensors",
     "climate_idle_power_w",
+    "occupancy_eco_enabled",
+    "occupancy_eco_delay",
+    "preheat_enabled",
     "climate_mode",
     "schedules",
     "schedule_selector_entity",
@@ -161,6 +191,7 @@ _SETTINGS_SAVE_FIELDS = (
     "coil_dry_drain_minutes",
     "mold_detection_enabled",
     "mold_humidity_threshold",
+    "mold_f_rsi",
     "mold_sustained_minutes",
     "mold_notification_cooldown",
     "mold_notifications_enabled",
@@ -279,8 +310,10 @@ async def websocket_list_rooms(
             "confidence": live.get("confidence"),
             "mpc_active": live.get("mpc_active", False),
             "presence_away": live.get("presence_away", False),
+            "occupancy_vacant": live.get("occupancy_vacant", False),
             "mold_risk_level": live.get("mold_risk_level", "ok"),
             "mold_surface_rh": live.get("mold_surface_rh"),
+            "mold_surface_temp": live.get("mold_surface_temp"),
             "mold_prevention_active": live.get("mold_prevention_active", False),
             "mold_prevention_delta": live.get("mold_prevention_delta", 0),
             "n_observations": live.get("n_observations", 0),
@@ -301,6 +334,7 @@ async def websocket_list_rooms(
             "climate_idle_power_w": live.get("climate_idle_power_w"),
             "compressor_protection_active": live.get("compressor_protection_active", False),
             "compressor_protection_reason": live.get("compressor_protection_reason"),
+            "compressor_protection_until": live.get("compressor_protection_until"),
             "coil_dry_active": live.get("coil_dry_active", False),
             "coil_dry_phase": live.get("coil_dry_phase"),
             "coil_dry_until": live.get("coil_dry_until"),
@@ -325,7 +359,7 @@ async def websocket_list_rooms(
             "hidden_rooms": settings.get("hidden_rooms", []),
             "room_order": settings.get("room_order", []),
             "group_by_floor": settings.get("group_by_floor", False),
-            "control_mode": settings.get("control_mode", "bangbang"),
+            "control_mode": settings.get("control_mode", DEFAULT_CONTROL_MODE),
             "climate_control_active": settings.get("climate_control_active", True),
             "presence_enabled": settings.get("presence_enabled", False),
             "presence_persons": settings.get("presence_persons", []),
@@ -372,13 +406,21 @@ async def websocket_list_rooms(
                     vol.Optional("regulation_offset", default=0.0): vol.All(
                         vol.Coerce(float), vol.Range(min=-5.0, max=5.0)
                     ),
+                    vol.Optional("setpoint_offset", default=0.0): vol.All(
+                        vol.Coerce(float), vol.Range(min=SETPOINT_OFFSET_MIN, max=SETPOINT_OFFSET_MAX)
+                    ),
                     vol.Optional("coil_dry", default=COIL_DRY_INHERIT): vol.In(COIL_DRY_OVERRIDES),
                     vol.Optional("coil_dry_minutes", default=0): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
                     vol.Optional("coil_dry_mode", default=""): vol.In(["", *COIL_DRY_MODES]),
                     vol.Optional("coil_dry_fan_mode", default=""): str,
+                    vol.Optional("valve_opening_entity"): _number_entity_or_empty,
+                    vol.Optional("valve_closing_entity"): _number_entity_or_empty,
+                    # No default: devices without it keep their stored form (#482)
+                    vol.Optional("valve_closing_mode"): vol.In(VALVE_CLOSING_MODES),
                 },
                 _validate_device_idle_action,
                 _validate_device_coil_dry,
+                _validate_device_valve,
             )
         ],
         vol.Optional("temperature_sensor"): str,
@@ -387,6 +429,11 @@ async def websocket_list_rooms(
         vol.Optional("aux_heat_sensors"): [str],
         vol.Optional("climate_power_sensors"): [str],
         vol.Optional("climate_idle_power_w"): vol.Coerce(float),
+        vol.Optional("occupancy_eco_enabled"): bool,
+        vol.Optional("occupancy_eco_delay"): vol.All(
+            vol.Coerce(int), vol.Range(min=MIN_OCCUPANCY_ECO_DELAY_MINUTES, max=240)
+        ),
+        vol.Optional("preheat_enabled"): bool,
         vol.Optional("climate_mode"): vol.In(CLIMATE_MODES),
         vol.Optional("schedules"): [{vol.Required("entity_id"): str}],
         vol.Optional("schedule_selector_entity"): str,
@@ -467,7 +514,10 @@ async def websocket_save_room(
             area_id,
         )
 
+    old_valves = get_valve_entities((store.get_room(area_id) or {}).get("devices", []))
     room = await store.async_save_room(area_id, config)
+    new_valves = get_valve_entities(room.get("devices", []))
+    await _async_release_dropped_valves(hass, area_id, old_valves, new_valves)
 
     # Notify coordinator to create/update sensor entities for the room
     coordinator = _get_coordinator(hass)
@@ -475,6 +525,37 @@ async def websocket_save_room(
         await coordinator.async_room_added(room)
 
     connection.send_result(msg["id"], {"room": room})
+
+
+async def _async_release_dropped_valves(
+    hass: HomeAssistant,
+    area_id: str,
+    old: dict[str, ValveEntities],
+    new: dict[str, ValveEntities],
+) -> None:
+    """Hand valves RoomMind no longer controls back to their TRVs (#413).
+
+    Nobody else would: without the config RoomMind does not know these number
+    entities any more, and the valve would stay pinned where it was last set. A changed
+    closing mode alone is left to the next cycle (#482): a release in the old mode would
+    open a TRV-ZBT fully while it idles.
+    """
+    for climate_eid, valve in old.items():
+        kept = new.get(climate_eid)
+        if kept is not None and kept[:2] == valve[:2]:
+            continue
+        try:
+            await async_release_valve(
+                hass,
+                climate_eid,
+                valve.opening,
+                valve.closing,
+                area_id=area_id,
+                hand_back=True,
+                idle_opening=valve.idle_opening,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Room '%s': releasing the valve of '%s' failed", area_id, climate_eid, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -498,11 +579,14 @@ async def websocket_delete_room(
     store = hass.data[DOMAIN]["store"]
     area_id = msg["area_id"]
 
+    old_valves = get_valve_entities((store.get_room(area_id) or {}).get("devices", []))
     try:
         await store.async_delete_room(area_id)
     except KeyError:
         connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
         return
+
+    await _async_release_dropped_valves(hass, area_id, old_valves, {})
 
     # Notify coordinator to remove sensor entities for the deleted room
     coordinator = _get_coordinator(hass)
@@ -544,25 +628,16 @@ async def websocket_override_set(
         connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
         return
 
-    climate_mode = room.get("climate_mode", "auto")
-
-    if override_type == "boost":
-        heat = room.get("comfort_heat", room.get("comfort_temp", DEFAULT_COMFORT_HEAT))
-        cool = room.get("comfort_cool", DEFAULT_COMFORT_COOL)
-    elif override_type == "eco":
-        heat = room.get("eco_heat", room.get("eco_temp", DEFAULT_ECO_HEAT))
-        cool = room.get("eco_cool", DEFAULT_ECO_COOL)
-    else:  # custom
+    if override_type == OVERRIDE_CUSTOM:
         heat = msg.get("heat")
         cool = msg.get("cool")
         if heat is None and cool is None:
             connection.send_error(msg["id"], "invalid", "Custom override requires heat and/or cool")
             return
+    else:
+        heat, cool = override_preset_band(room, override_type)
 
-    if climate_mode == "heat_only":
-        cool = None
-    elif climate_mode == "cool_only":
-        heat = None
+    heat, cool = mask_override_band(heat, cool, room.get("climate_mode", "auto"))
 
     if heat is not None and cool is not None and cool < heat:
         connection.send_error(msg["id"], "invalid", "Cooling target must be >= heating target")
@@ -582,6 +657,7 @@ async def websocket_override_set(
 
     coordinator = _get_coordinator(hass)
     if coordinator:
+        coordinator.clear_override_seed(area_id)
         await coordinator.async_request_refresh()
 
     connection.send_result(msg["id"], {"success": True})
@@ -625,6 +701,7 @@ async def websocket_override_clear(
 
     coordinator = _get_coordinator(hass)
     if coordinator:
+        coordinator.clear_override_seed(area_id)
         await coordinator.async_request_refresh()
 
     connection.send_result(msg["id"], {"success": True})
@@ -659,7 +736,7 @@ async def websocket_get_settings(
         vol.Optional("outdoor_humidity_sensor"): str,
         vol.Optional("outdoor_cooling_min"): vol.Coerce(float),
         vol.Optional("outdoor_heating_max"): vol.Coerce(float),
-        vol.Optional("control_mode"): vol.In(["mpc", "bangbang"]),
+        vol.Optional("control_mode"): vol.In([CONTROL_MODE_MPC, CONTROL_MODE_BANGBANG]),
         vol.Optional("comfort_weight"): vol.Coerce(float),
         vol.Optional("weather_entity"): str,
         vol.Optional("outdoor_unavailable_notify"): bool,
@@ -684,6 +761,7 @@ async def websocket_get_settings(
         vol.Optional("coil_dry_drain_minutes"): vol.All(vol.Coerce(int), vol.Range(min=0, max=15)),
         vol.Optional("mold_detection_enabled"): bool,
         vol.Optional("mold_humidity_threshold"): vol.All(vol.Coerce(float), vol.Range(min=50, max=90)),
+        vol.Optional("mold_f_rsi"): vol.All(vol.Coerce(float), vol.Range(min=0.6, max=0.95)),
         vol.Optional("mold_sustained_minutes"): vol.All(vol.Coerce(int), vol.Range(min=5, max=120)),
         vol.Optional("mold_notification_cooldown"): vol.All(vol.Coerce(int), vol.Range(min=10, max=1440)),
         vol.Optional("mold_notifications_enabled"): bool,

@@ -45,7 +45,7 @@ export class RoomMindPanel extends LitElement {
   @state() private _vacationUntil: number | null = null;
   @state() private _hiddenRooms: string[] = [];
   @state() private _showHiddenRooms = false;
-  @state() private _controlMode: "mpc" | "bangbang" = "bangbang";
+  @state() private _controlMode: "mpc" | "bangbang" = "mpc";
   @state() private _climateControlActive = true;
   @state() private _presenceEnabled = false;
   @state() private _valveProtectionEnabled = false;
@@ -491,6 +491,7 @@ export class RoomMindPanel extends LitElement {
             .presencePersons=${this._presencePersons}
             .climateControlActive=${this._climateControlActive}
             .valveProtectionEnabled=${this._valveProtectionEnabled}
+            .controlMode=${this._controlMode}
             .coilDryEnabled=${this._coilDryEnabled}
             .coilDryMinutes=${this._coilDryMinutes}
             .coilDryMode=${this._coilDryMode}
@@ -807,7 +808,7 @@ export class RoomMindPanel extends LitElement {
       this._hiddenRooms = result.hidden_rooms ?? [];
       this._roomOrder = result.room_order ?? [];
       this._groupByFloor = result.group_by_floor ?? false;
-      this._controlMode = result.control_mode ?? "bangbang";
+      this._controlMode = result.control_mode ?? "mpc";
       this._climateControlActive = result.climate_control_active ?? true;
       this._presenceEnabled = result.presence_enabled ?? false;
       this._valveProtectionEnabled = result.valve_protection_enabled ?? false;

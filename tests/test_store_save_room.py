@@ -77,6 +77,9 @@ async def test_create_defaults(store):
     assert room["temperature_sensor"] == ""
     assert room["humidity_sensor"] == ""
     assert room["occupancy_sensors"] == []
+    assert room["occupancy_eco_enabled"] is False
+    assert room["occupancy_eco_delay"] == 15
+    assert room["preheat_enabled"] is True
     assert room["devices"] == []
     assert room["thermostats"] == []
     assert room["acs"] == []

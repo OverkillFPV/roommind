@@ -13,6 +13,8 @@ export class RsAnalyticsModel extends LitElement {
   @property({ attribute: false }) public hass!: HomeAssistant;
   @property({ attribute: false }) public data: AnalyticsData | null = null;
   @property({ type: String }) public language = "en";
+  @property({ type: String }) public controlMode: "mpc" | "bangbang" = "mpc";
+  @property({ type: Boolean }) public managed = false;
 
   @state() private _expandedStat: string | null = null;
 
@@ -47,6 +49,7 @@ export class RsAnalyticsModel extends LitElement {
       labelKey: TranslationKey,
       unit: string,
       infoKey: TranslationKey,
+      sub?: string,
     ) => {
       statItems.push({ id, labelKey, infoKey });
       const active = this._expandedStat === id;
@@ -55,6 +58,7 @@ export class RsAnalyticsModel extends LitElement {
           <div class="stat-content">
             <span class="model-value ${value === ph ? "pending" : ""}">${value}</span>
             <span class="model-label">${localize(labelKey, l)}${unit ? ` (${unit})` : ""}</span>
+            ${sub ? html`<span class="model-sub">${sub}</span>` : nothing}
           </div>
           <ha-icon
             class="info-icon ${active ? "info-active" : ""}"
@@ -98,14 +102,24 @@ export class RsAnalyticsModel extends LitElement {
             <div class="confidence-bar">
               <div class="confidence-fill" style="width: ${hasModel ? confidencePct : 0}%"></div>
             </div>
-            <div class="control-mode-badge ${mpcActive ? "mpc" : "bangbang"}">
-              <ha-icon icon=${mpcActive ? "mdi:brain" : "mdi:school-outline"}></ha-icon>
-              ${
-                mpcActive
-                  ? localize("analytics.control_mode_mpc", l)
-                  : localize("analytics.control_mode_bangbang", l)
-              }
-            </div>
+            ${
+              // Managed rooms (no external sensor) never run MPC, so "learning" would stay forever.
+              this.managed
+                ? nothing
+                : this.controlMode === "bangbang"
+                  ? html`<div class="control-mode-badge bangbang">
+                      <ha-icon icon="mdi:power"></ha-icon>
+                      ${localize("settings.control_mode_simple", l)}
+                    </div>`
+                  : html`<div class="control-mode-badge ${mpcActive ? "mpc" : "bangbang"}">
+                      <ha-icon icon=${mpcActive ? "mdi:brain" : "mdi:school-outline"}></ha-icon>
+                      ${
+                        mpcActive
+                          ? localize("analytics.control_mode_mpc", l)
+                          : localize("analytics.control_mode_bangbang", l)
+                      }
+                    </div>`
+            }
             ${
               this._expandedStat === "confidence"
                 ? html`<div class="info-panel stat-info-panel">
@@ -132,103 +146,124 @@ export class RsAnalyticsModel extends LitElement {
               "",
               "analytics.info.time_constant",
             )}
-            ${canHeat
-              ? stat(
-                  "heating_rate",
-                  hasHeated && model
-                    ? toDisplayDelta(model.Q_heat, this.hass).toFixed(1) +
-                        tempUnit(this.hass) +
-                        "/h"
-                    : ph,
-                  "analytics.heating_rate",
-                  "",
-                  "analytics.info.heating_rate",
-                )
-              : nothing}
-            ${canCool
-              ? stat(
-                  "cooling_rate",
-                  hasCooled && model
-                    ? toDisplayDelta(model.Q_cool, this.hass).toFixed(1) +
-                        tempUnit(this.hass) +
-                        "/h"
-                    : ph,
-                  "analytics.cooling_rate",
-                  "",
-                  "analytics.info.cooling_rate",
-                )
-              : nothing}
-            ${canHeat && m?.w_per_deg_hr_heat
-              ? stat(
-                  "heating_efficiency",
-                  toDisplayDelta(1000 / m.w_per_deg_hr_heat, this.hass).toFixed(1) +
-                    tempUnit(this.hass) +
-                    "/h/kW",
-                  "analytics.heating_gain",
-                  "",
-                  "analytics.info.heating_gain",
-                )
-              : nothing}
-            ${canCool && m?.w_per_deg_hr_cool
-              ? stat(
-                  "cooling_efficiency",
-                  toDisplayDelta(1000 / m.w_per_deg_hr_cool, this.hass).toFixed(1) +
-                    tempUnit(this.hass) +
-                    "/h/kW",
-                  "analytics.cooling_gain",
-                  "",
-                  "analytics.info.cooling_gain",
-                )
-              : nothing}
-            ${m?.has_aux_heat_sensors && model && model.Q_aux && model.Q_aux > 1e-6
-              ? stat(
-                  "aux_efficiency",
-                  (toDisplayDelta(model.Q_aux * 1000, this.hass)).toFixed(1) +
-                    tempUnit(this.hass) +
-                    "/h/kW",
-                  "analytics.aux_gain",
-                  "",
-                  "analytics.info.aux_gain",
-                )
-              : nothing}
-            ${m?.rated_p_heat_w
-              ? stat(
-                  "rated_p_heat",
-                  m.rated_p_heat_w.toFixed(0) + " W",
-                  "analytics.rated_p_heat",
-                  "",
-                  "analytics.info.rated_p_heat",
-                )
-              : nothing}
-            ${m?.rated_p_cool_w
-              ? stat(
-                  "rated_p_cool",
-                  m.rated_p_cool_w.toFixed(0) + " W",
-                  "analytics.rated_p_cool",
-                  "",
-                  "analytics.info.rated_p_cool",
-                )
-              : nothing}
-            ${model && model.Q_solar > 0.1
-              ? stat(
-                  "solar_gain",
-                  toDisplayDelta(model.Q_solar, this.hass).toFixed(1) + tempUnit(this.hass) + "/h",
-                  "analytics.solar_gain",
-                  "",
-                  "analytics.info.solar_gain",
-                )
-              : nothing}
-            ${model && m?.has_occupancy_sensors
-              ? stat(
-                  "occupancy_gain",
-                  toDisplayDelta(model.Q_occupancy, this.hass).toFixed(1) +
-                    tempUnit(this.hass) +
-                    "/h",
-                  "analytics.occupancy_gain",
-                  "",
-                  "analytics.info.occupancy_gain",
-                )
-              : nothing}
+            ${
+              canHeat
+                ? stat(
+                    "heating_rate",
+                    hasHeated && model
+                      ? toDisplayDelta(model.Q_heat, this.hass).toFixed(1) +
+                          tempUnit(this.hass) +
+                          "/h"
+                      : ph,
+                    "analytics.heating_rate",
+                    "",
+                    "analytics.info.heating_rate",
+                  )
+                : nothing
+            }
+            ${
+              canCool
+                ? stat(
+                    "cooling_rate",
+                    hasCooled && model
+                      ? toDisplayDelta(model.Q_cool, this.hass).toFixed(1) +
+                          tempUnit(this.hass) +
+                          "/h"
+                      : ph,
+                    "analytics.cooling_rate",
+                    "",
+                    "analytics.info.cooling_rate",
+                  )
+                : nothing
+            }
+            ${
+              canHeat && m?.w_per_deg_hr_heat
+                ? stat(
+                    "heating_efficiency",
+                    toDisplayDelta(1000 / m.w_per_deg_hr_heat, this.hass).toFixed(1) +
+                      tempUnit(this.hass) +
+                      "/h/kW",
+                    "analytics.heating_gain",
+                    "",
+                    "analytics.info.heating_gain",
+                  )
+                : nothing
+            }
+            ${
+              canCool && m?.w_per_deg_hr_cool
+                ? stat(
+                    "cooling_efficiency",
+                    toDisplayDelta(1000 / m.w_per_deg_hr_cool, this.hass).toFixed(1) +
+                      tempUnit(this.hass) +
+                      "/h/kW",
+                    "analytics.cooling_gain",
+                    "",
+                    "analytics.info.cooling_gain",
+                  )
+                : nothing
+            }
+            ${
+              m?.has_aux_heat_sensors && model && model.Q_aux && model.Q_aux > 1e-6
+                ? stat(
+                    "aux_efficiency",
+                    toDisplayDelta(model.Q_aux * 1000, this.hass).toFixed(1) +
+                      tempUnit(this.hass) +
+                      "/h/kW",
+                    "analytics.aux_gain",
+                    "",
+                    "analytics.info.aux_gain",
+                  )
+                : nothing
+            }
+            ${
+              m?.rated_p_heat_w
+                ? stat(
+                    "rated_p_heat",
+                    m.rated_p_heat_w.toFixed(0) + " W",
+                    "analytics.rated_p_heat",
+                    "",
+                    "analytics.info.rated_p_heat",
+                  )
+                : nothing
+            }
+            ${
+              m?.rated_p_cool_w
+                ? stat(
+                    "rated_p_cool",
+                    m.rated_p_cool_w.toFixed(0) + " W",
+                    "analytics.rated_p_cool",
+                    "",
+                    "analytics.info.rated_p_cool",
+                  )
+                : nothing
+            }
+            ${
+              model && model.Q_solar > 0.1
+                ? stat(
+                    "solar_gain",
+                    toDisplayDelta(model.Q_solar, this.hass).toFixed(1) +
+                      tempUnit(this.hass) +
+                      "/h",
+                    "analytics.solar_gain",
+                    "",
+                    "analytics.info.solar_gain",
+                    this._solarSub(m),
+                  )
+                : nothing
+            }
+            ${
+              model && m?.has_occupancy_sensors
+                ? stat(
+                    "occupancy_gain",
+                    toDisplayDelta(model.Q_occupancy, this.hass).toFixed(1) +
+                      tempUnit(this.hass) +
+                      "/h",
+                    "analytics.occupancy_gain",
+                    "",
+                    "analytics.info.occupancy_gain",
+                  )
+                : nothing
+            }
             ${stat(
               "accuracy_idle",
               hasIdleData && predStdIdle != null
@@ -270,6 +305,14 @@ export class RsAnalyticsModel extends LitElement {
         </div>
       </ha-card>
     `;
+  }
+
+  private _solarSub(m: AnalyticsData["model"] | undefined): string | undefined {
+    if (m?.solar_gain_now == null || m.solar_gain_today_max == null) return undefined;
+    const fmt = (v: number) => toDisplayDelta(v, this.hass).toFixed(1) + tempUnit(this.hass) + "/h";
+    return localize("analytics.solar_gain_sub", this.language)
+      .replace("{now}", fmt(m.solar_gain_now))
+      .replace("{today}", fmt(m.solar_gain_today_max));
   }
 
   private _toggleStat(id: string) {
@@ -420,6 +463,11 @@ export class RsAnalyticsModel extends LitElement {
 
       .model-label {
         font-size: 12px;
+        color: var(--secondary-text-color);
+      }
+
+      .model-sub {
+        font-size: 11px;
         color: var(--secondary-text-color);
       }
 

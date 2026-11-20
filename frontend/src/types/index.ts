@@ -43,8 +43,10 @@ export interface RoomLiveData {
   confidence: number | null;
   mpc_active: boolean;
   presence_away: boolean;
+  occupancy_vacant?: boolean;
   mold_risk_level: "ok" | "warning" | "critical";
   mold_surface_rh: number | null;
+  mold_surface_temp: number | null;
   mold_prevention_active: boolean;
   mold_prevention_delta: number;
   blind_position: number | null;
@@ -64,6 +66,7 @@ export interface RoomLiveData {
   climate_idle_power_w?: number | null;
   compressor_protection_active: boolean;
   compressor_protection_reason: "min_off" | "min_run" | null;
+  compressor_protection_until: number | null;
   coil_dry_active: boolean;
   coil_dry_phase: "drain" | "blow" | null;
   coil_dry_until: number | null;
@@ -92,10 +95,14 @@ export interface DeviceConfig {
   active_fan_mode?: string; // fan speed while actively heating/cooling; "" = leave device's own fan control alone
   setpoint_mode?: "proportional" | "direct"; // default "proportional"
   regulation_offset?: number; // signed °C, default 0; biases setpoint toward action
+  setpoint_offset?: number; // °C added to the room target in direct mode, default 0
   coil_dry?: "inherit" | "on" | "off"; // default "inherit"
   coil_dry_minutes?: number; // 0 = inherit global
   coil_dry_mode?: "" | "fan_only" | "dry"; // "" = inherit global
   coil_dry_fan_mode?: string; // "" = inherit global, "__keep__" = keep current
+  valve_opening_entity?: string; // number entity for direct valve opening degree (0-100%)
+  valve_closing_entity?: string; // number entity for direct valve closing degree (0-100%)
+  valve_closing_mode?: "closing_degree" | "idle_opening"; // idle_opening: the second entity is the opening while idle (SONOFF TRV-ZBT)
 }
 
 export type ConflictResolution =
@@ -121,6 +128,9 @@ export interface RoomConfig {
   temperature_sensor: string;
   humidity_sensor: string;
   occupancy_sensors?: string[];
+  occupancy_eco_enabled?: boolean;
+  occupancy_eco_delay?: number;
+  preheat_enabled?: boolean;
   window_sensors: string[];
   window_open_delay: number;
   window_close_delay: number;
@@ -199,6 +209,7 @@ export interface GlobalSettings {
   coil_dry_drain_minutes?: number;
   mold_detection_enabled?: boolean;
   mold_humidity_threshold?: number;
+  mold_f_rsi?: number;
   mold_sustained_minutes?: number;
   mold_notification_cooldown?: number;
   mold_notifications_enabled?: boolean;
@@ -292,6 +303,7 @@ export interface AnalyticsData {
       Q_solar: number;
       Q_occupancy: number;
       Q_aux?: number;
+      Q_fast?: number;
     };
     n_samples: number;
     n_observations: number;
@@ -310,6 +322,8 @@ export interface AnalyticsData {
     w_per_deg_hr_aux?: number | null;
     has_aux_heat_sensors?: boolean;
     has_climate_power_sensors?: boolean;
+    solar_gain_now?: number;
+    solar_gain_today_max?: number;
   };
 }
 
