@@ -18,7 +18,7 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.roommind.climate import RoomMindRoomClimate
-from custom_components.roommind.const import DOMAIN
+from custom_components.roommind.const import DOMAIN, SCHEDULE_UNREADABLE_HOLD_HOURS
 
 TRV = {"entity_id": "climate.trv", "type": "trv"}
 AC = {"entity_id": "climate.ac", "type": "ac"}
@@ -262,6 +262,7 @@ def test_extra_attributes(setup):
         "presence_away": True,
         "occupancy_vacant": False,
         "vacation": True,
+        "price_level": None,
     }
     assert entity.current_humidity == 55.0
 
@@ -287,6 +288,20 @@ async def test_set_temperature_without_schedule_holds_until_changed(setup):
     entity = make(_room(schedules=[]))
     await entity.async_set_temperature(**{ATTR_TARGET_TEMP_LOW: 22.0, ATTR_TARGET_TEMP_HIGH: 25.0})
     assert _written(store)["override_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_under_unavailable_schedule_holds_for_the_fallback(setup):
+    make, _, store, states = setup
+    states["schedule.living"].state = "unavailable"
+    states["schedule.living"].attributes = {}
+    before = time.time()
+    await make().async_set_temperature(**{ATTR_TARGET_TEMP_LOW: 22.0, ATTR_TARGET_TEMP_HIGH: 25.0})
+    until = _written(store)["override_until"]
+    assert until is not None
+    assert (
+        before + SCHEDULE_UNREADABLE_HOLD_HOURS * 3600 <= until <= time.time() + SCHEDULE_UNREADABLE_HOLD_HOURS * 3600
+    )
 
 
 @pytest.mark.asyncio
@@ -577,8 +592,8 @@ class TestAreaAssignment:
         areas = MagicMock()
         areas.async_get_area.return_value = MagicMock() if area_exists else None
         with (
-            patch("custom_components.roommind.climate.er.async_get", return_value=registry),
-            patch("custom_components.roommind.climate.ar.async_get", return_value=areas),
+            patch("custom_components.roommind.utils.area_utils.er.async_get", return_value=registry),
+            patch("custom_components.roommind.utils.area_utils.ar.async_get", return_value=areas),
         ):
             entity._assign_area_once()
         return registry
@@ -656,3 +671,8 @@ async def test_celsius_echo_tolerance_is_half_a_step(setup, want, kept):
     await entity.async_set_temperature(temperature=want)
 
     assert store.async_update_room.called is not kept
+
+
+def test_room_entity_is_enabled_for_new_rooms(setup):
+    make, *_ = setup
+    assert make(_room()).entity_registry_enabled_default is True

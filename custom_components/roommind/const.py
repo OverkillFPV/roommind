@@ -7,7 +7,7 @@ from homeassistant.const import Platform
 from homeassistant.core import Context
 
 DOMAIN = "roommind"
-VERSION = "1.8.0"
+VERSION = "2.0.1"
 
 # Platforms
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.BINARY_SENSOR, Platform.CLIMATE]
@@ -26,6 +26,9 @@ OVERRIDE_TYPES = [OVERRIDE_BOOST, OVERRIDE_ECO, OVERRIDE_CUSTOM]
 # Grace period after the override entity is switched on before the seeded
 # override is evaluated; the caller's real targets normally arrive within it (#447).
 OVERRIDE_TURN_ON_REFRESH_DELAY_S = 3.0
+# A hold "until the schedule changes" while the schedule cannot be read ends after this
+# (h, same as the dashboard card's fallback without a schedule) instead of never
+SCHEDULE_UNREADABLE_HOLD_HOURS = 4
 
 # Room modes
 MODE_IDLE = "idle"
@@ -49,12 +52,85 @@ DEFAULT_ECO_TEMP = 17.0
 DEFAULT_COMFORT_HEAT = 21.0
 DEFAULT_COMFORT_COOL = 24.0
 DEFAULT_ECO_HEAT = 17.0
+
+# What set a room's targets, recorded with the history for the analytics chart; "" = schedule
+TARGET_REASON_OVERRIDE = "override"
+TARGET_REASON_VACATION = "vacation"
+TARGET_REASON_AWAY = "away"
+TARGET_REASON_VACANT = "vacant"
+
+# Per room: how far the schedule target may move with the electricity price (0 = off)
+MAX_PRICE_SHIFT_K = 2.0
 DEFAULT_ECO_COOL = 27.0
 
 # Minutes all occupancy sensors must report "off" before an empty room drops to eco (#180)
 DEFAULT_OCCUPANCY_ECO_DELAY_MINUTES = 15
 # Shorter delays flip the target on every motion-sensor edge and flood battery TRVs with setpoints
 MIN_OCCUPANCY_ECO_DELAY_MINUTES = 5
+
+# Air quality (#267). CO2: UBA rates < 1000 ppm harmless, 1000-2000 ppm ventilate more
+DEFAULT_CO2_THRESHOLD = 1000
+MIN_CO2_THRESHOLD = 800
+MAX_CO2_THRESHOLD = 5000
+# Good again below 80 % of the threshold (1000 -> 800 ppm); own hysteresis choice, not a UBA value
+AIR_QUALITY_CLEAR_FACTOR = 0.8
+VENTILATION_DOMAINS = ("fan", "switch", "input_boolean")
+VENTILATION_MIN_RUN_MINUTES = 15
+
+# Humidity limits per room in % RH (#518, #526): too humid from the upper limit on, fine again
+# HUMIDITY_HYSTERESIS below it; the lower limit mirrors that. 40-60 % is the usual comfort band
+DEFAULT_HUMIDITY_MAX = 60
+DEFAULT_HUMIDITY_MIN = 40
+MIN_HUMIDITY_MAX = 40
+MAX_HUMIDITY_MAX = 90
+MIN_HUMIDITY_MIN = 20
+MAX_HUMIDITY_MIN = 60
+HUMIDITY_HYSTERESIS = 5
+# Upper minus lower limit: the two release points never cross, so both devices never run at once
+HUMIDITY_LIMIT_GAP = 10
+HUMIDITY_DEVICE_DOMAINS = ("humidifier", "switch", "input_boolean")
+# Dehumidifiers/humidifiers: a run lasts at least 30 min and RoomMind's own off rests 15 min, so a
+# compressor dehumidifier starts at most every 45 min instead of cycling on the 5 % hysteresis
+HUMIDITY_DEVICE_MIN_RUN_MINUTES = 30
+HUMIDITY_DEVICE_MIN_OFF_MINUTES = 15
+# Ventilating for humidity: outdoor air this much drier (g/m³ absolute) to start, the smaller margin to go on
+HUMIDITY_VENT_START_MARGIN = 2.0
+HUMIDITY_VENT_KEEP_MARGIN = 1.0
+
+# Air conditioner in dry while a room is too humid and needs neither heating nor cooling (#440).
+# Dry cools too: it ends AC_DRY_STOP_MARGIN_K above the heat target (and never more than
+# AC_DRY_MAX_BELOW_COOL_K below the cool target, so a wide eco band is not cooled through) and
+# starts again from AC_DRY_START_MARGIN_K above it
+AC_DRY_STOP_MARGIN_K = 0.5
+AC_DRY_START_MARGIN_K = 1.0
+AC_DRY_MAX_BELOW_COOL_K = 3.0
+AC_DRY_MIN_RUN_MINUTES = 10
+# Pause after dry reached its stop point: the air warms back to the walls within minutes
+AC_DRY_MIN_OFF_MINUTES = 15
+# No dry this long after the room heated: it would take back what the heating just brought
+AC_DRY_AFTER_HEATING_MINUTES = 60
+# The model learns again this long after dry: the air warms back to the walls meanwhile
+AC_DRY_SETTLE_MINUTES = 30
+# A unit that does not show dry this long after the switch does not take it
+AC_DRY_REPORT_SECONDS = 300
+# The room's own dehumidifier must be unreadable this long before an AC dries in its place (Wi-Fi dropouts)
+AC_DRY_DEHUMIDIFIER_GONE_MINUTES = 10
+
+# Room fan (#266): a ceiling or standing fan that runs while RoomMind heats and/or cools the room
+ROOM_FAN_HEAT = "heat"
+ROOM_FAN_COOL = "cool"
+ROOM_FAN_BOTH = "both"
+ROOM_FAN_MODES = (ROOM_FAN_HEAT, ROOM_FAN_COOL, ROOM_FAN_BOTH)
+DEFAULT_ROOM_FAN_MODE = ROOM_FAN_BOTH
+# No compressor behind it, only noise and relay wear: shorter than the humidity devices
+ROOM_FAN_MIN_RUN_MINUTES = 10
+ROOM_FAN_MIN_OFF_MINUTES = 5
+# After a run the fan goes on this long (the radiator profile's decay time): it bridges the short
+# pauses between AC runs and spreads the heat a radiator still gives off. Not after underfloor
+# heating (the fan ran through the long run). In radiator rooms up to the cap while the learned
+# afterglow lasts; past it the little heat left is not worth a draught in winter
+ROOM_FAN_POST_RUN_MINUTES = 10
+ROOM_FAN_POST_HEAT_MAX_MINUTES = 30
 
 # Context identifier for RoomMind-initiated service calls.
 # Automations can check: trigger.context.parent_id == "roommind"
@@ -96,6 +172,18 @@ AC_BOOST_DELTA_MAX = 50.0  # Comfort-end AC cap (°C); finite value above any re
 PROPORTIONAL_DEADBAND_C = 0.5  # Minimum proportional setpoint change (°C) to resend, in the gentle regime
 PROPORTIONAL_DEADBAND_NEAR_TARGET_C = 0.2  # Finer proportional deadband (°C) within 1°C of target
 PROPORTIONAL_SETPOINT_DWELL_SECONDS = 300  # Minimum time a proportional setpoint stays on the device before a recomputed one replaces it (one MPC block, #317)
+PROPORTIONAL_SETPOINT_REPORT_SECONDS = (
+    60  # A device still showing another setpoint this long after a send dropped it; sent again once within the dwell
+)
+PROPORTIONAL_SETPOINT_REPORT_TOLERANCE = (
+    0.5  # K a shown setpoint may differ from the sent one (device rounding) before it counts as dropped
+)
+# A device RoomMind switched off that shows "off" but still reports a run lost the command
+# (Zigbee TRV heating for hours behind an optimistic "off"); sent again only to devices seen to drop a run's
+# hvac_action after an off, so integrations whose hvac_action ignores the mode get nothing extra
+OFF_CONFIRM_SECONDS = 300  # Time a device may keep reporting the run after the off before it is sent again
+OFF_RESEND_INTERVAL_SECONDS = 600  # Minimum time between two sends of the same lost off
+OFF_RESEND_MAX = 3  # Sends per off before RoomMind gives up and leaves a warning
 BOOST_CAP_FALLBACK_STEP = 0.5  # Distance kept below a device's max_temp for proportional heating setpoints when it reports no target_temp_step (#396)
 # Direct valve control (#413): TRVs whose valve opening RoomMind sets through number entities
 VALVE_DWELL_SECONDS = 600  # Minimum time a valve position stays before a small correction moves the motor again
@@ -160,7 +248,8 @@ DEFAULT_MOLD_SUSTAINED_MINUTES = 30  # minutes risk must persist before notifica
 DEFAULT_MOLD_COOLDOWN_MINUTES = 60  # minutes between repeated notifications per room
 MOLD_PREVENTION_DELTAS = {"light": 1.0, "medium": 2.0, "strong": 3.0}
 MOLD_HYSTERESIS = 5.0  # surface RH must drop this much below warning to clear
-MIN_MOLD_GROWTH_TEMP = 5.0  # °C — below this surface temp, mold risk negligible
+# ...and stay there this long: the estimate follows the air, which a heater warms in minutes
+MOLD_PREVENTION_RELEASE_MINUTES = 30
 DEFAULT_MOLD_F_RSI = 0.80  # DIN 4108-2 temperature factor; realistic for standard existing buildings
 
 # Heating system profiles — residual heat modeling per system type
@@ -183,6 +272,52 @@ HEATING_SYSTEM_PROFILES: dict[str, dict[str, float]] = {
     },
 }
 RESIDUAL_HEAT_CUTOFF = 0.02  # below this q_residual is treated as zero
+# Only radiator rooms learn their residual heat and stop a run early on it; underfloor
+# keeps its own pre-heat synthesis (mpc_optimizer) with the fixed profile.
+HEATING_SYSTEM_RADIATOR = "radiator"
+
+# Learned residual heat: after each heating run the room is watched for
+# RESIDUAL_LEARN_WINDOW_MINUTES; the rise beyond the model's idle drift, divided by
+# the rise the profile predicts, is one sample of the room's residual scale
+# (multiplier on the profile's initial_fraction). A run that restarts earlier still
+# counts after RESIDUAL_LEARN_MIN_MINUTES. The window is longer than a radiator's
+# profile tau on purpose: the scale then matches the total stored heat, which is
+# what decides the overshoot, even when the real radiator cools slower than tau.
+# The cap is far above the profile's own scale: real rooms (a 7-day HA history, short
+# runs on TRVs with boosted setpoints) released 8-25x the profile's heat after a stop,
+# mostly because the heating rate learned during a short run trails the radiator.
+RESIDUAL_LEARN_WINDOW_MINUTES = 60.0
+# Largest sensor reporting step the plan bridges after a radiator stop (AfterglowReading)
+AFTERGLOW_READING_MAX_STEP_K = 0.5
+RESIDUAL_LEARN_MIN_MINUTES = 15.0
+RESIDUAL_LEARN_MIN_EXPECTED_K = 0.03  # profile-predicted rise below this carries no signal
+RESIDUAL_SCALE_MIN = 0.0
+RESIDUAL_SCALE_MAX = 15.0
+RESIDUAL_SCALE_EMA_ALPHA = 0.2
+# The profile (scale 1) counts as this many earlier samples: a sample moves the scale by
+# 1 / (weight + n + 1) until that reaches the EMA alpha, so one run disturbed by something
+# the model does not know cannot set the scale on its own (one sample reached the cap of
+# 15 in a real room).
+RESIDUAL_SCALE_PRIOR_WEIGHT = 2.0
+
+# Learned decay time of a radiator room's afterglow. The profile's 10 min is a guess; in
+# real rooms the sensor kept rising for 40-60 min after a stop (radiator and room air
+# release the heat slowly), while a valve that shuts hard showed a short bump. After each
+# full observation window the measured rise is fitted against these decay times (same
+# total heat), and the best one is one sample. Weighed like the scale (prior: the profile).
+RESIDUAL_TAU_GRID = (5.0, 7.5, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0)
+RESIDUAL_TAU_MIN = 5.0
+RESIDUAL_TAU_MAX = 60.0
+RESIDUAL_TAU_MIN_RISE_K = 0.3  # the shape of a smaller rise is lost in the sensor's 0.1-0.2 K steps
+# Radiator decisions look this many decay times past the min run, so the overshoot a
+# stored-heat afterglow causes 30-60 min after a stop is inside what the plan weighs.
+# At the profile's 10 min this gives the base lookahead (6 blocks).
+RADIATOR_LOOKAHEAD_TAUS = 2.0
+# A radiator room whose learned afterglow of one regular min run lifts the room more than
+# this runs for a single block instead: the stored heat of a 10-min run overshot heavy
+# radiators by ~0.5 K even at the lowest power (the TRV opens fully once its head sits below
+# a boosted setpoint), so holding the target needs a smaller quantum.
+RADIATOR_SHORT_RUN_AFTERGLOW_K = 0.5
 
 # AC rebound: while an AC cools, the air drops below the building mass; after it
 # stops the air relaxes back within minutes. Charge relaxes towards the cooling
@@ -192,6 +327,7 @@ AC_REBOUND_CUTOFF = 0.01  # below this the rebound charge is treated as zero
 
 # Blind/cover control
 COVER_SOLAR_MIN: float = 0.15
+DEFAULT_COVERS_OUTDOOR_MIN_TEMP: float = 10.0  # °C outdoor below which the sun is not shaded (None = this)
 COVER_HYSTERESIS: float = 1.0
 COVER_MIN_HOLD_SECONDS: int = 900
 COVER_POS_SCALE: float = 50.0
@@ -211,8 +347,23 @@ COVER_MIN_IDLE_FOR_LEARNED: int = 30  # Min idle observations before trusting EK
 COVER_POS_DEADBAND: int = 20  # min position change (%) to trigger motor movement
 COVER_REOPEN_STEP: int = 40  # min partial reopening (%) within a shading episode
 COVER_REOPEN_HOLD_SECONDS: int = 3600  # min time since the last move before a partial reopening
+COVER_REOPEN_SNAP_PCT: int = 5  # a reopening ending this close to open (or the baseline) goes all the way
 COVER_DAILY_LOOKAHEAD_H: float = 8.0  # hours ahead to search for daily solar peak (Tier 2)
 COVER_SMOOTHING_MINUTES: float = 30.0  # EMA time constant for room temp and shading excess (AC cycles)
+
+# Per-room sun sensor (#303), see managers/solar_sensor_manager.py
+SOLAR_SENSOR_LEARN_MIN_Q: float = 0.1  # the model must expect at least this much sun (GHI/1000) to learn the ratio
+SOLAR_SENSOR_USE_MIN_Q: float = 0.02  # below it (dawn, dusk) a reading is lamp light as much as sun
+SOLAR_SENSOR_CALIBRATION_SUN_H: float = 0.3  # model sun (h at 1000 W/m²) to fix the scale: a clear winter day
+SOLAR_SENSOR_OPEN_SHADING: float = 0.9  # shading factor from which the covers count as open (~88 % position)
+SOLAR_SENSOR_SHADED: float = 0.75  # shading factor up to which a sample tells where the sensor sits
+SOLAR_SENSOR_POSITION_MIN_SUN_H: float = 1.0  # shaded model sun before the sensor position is decided
+SOLAR_SENSOR_STALE_S: float = 3600.0  # no report for this long in daylight: the sensor hangs
+SOLAR_SENSOR_PROFILE_BINS: int = 24  # profile per 15° of sun azimuth
+SOLAR_SENSOR_PROFILE_TAU_H: float = 3.0  # sample hours a profile bin averages over
+SOLAR_SENSOR_RATIO_MAX: float = 4.0  # measured/model ratio clamp (a facade gets more than GHI at low sun)
+SOLAR_SENSOR_DEVIATION_TAU_MIN: float = 20.0  # smoothing of the current deviation from the profile
+SOLAR_SENSOR_DEVIATION_FADE_H: float = 2.0  # forecasts fade the current deviation back to the profile
 COVER_SMOOTHING_RISE_MINUTES: float = 10.0  # faster EMA while the shading excess climbs
 
 # Heat source orchestration — smart routing for rooms with multiple heating device types
@@ -226,10 +377,23 @@ HEAT_SOURCE_SECONDARY_POWER_SCALE = 0.7  # throttle secondary when both active (
 # Compressor group defaults
 DEFAULT_COMPRESSOR_MIN_RUN_MINUTES = 15
 DEFAULT_COMPRESSOR_MIN_OFF_MINUTES = 5
+# "All in the same mode" (#533): a switch waits for the units still in the other mode to go off,
+# at most this long (a unit still in its min run longer): a unit RoomMind may not touch must not block it for good.
+UNIFORM_SWITCH_MAX_WAIT_S = 300
 # Devices without usable state (IR blasters) get an unchanged command once more after this long.
 # Long enough that it is not audible as a beep pattern (#416), short enough to heal a lost frame,
 # a change on the remote or a restarted device within one comfortable stretch.
 COMMAND_CACHE_REASSERT_SECONDS = 1800
+# Setpoint changed on the device itself (#259): after RoomMind switches a device's mode, the device may
+# restore a setpoint it stored for that mode. A setpoint change reported up to DEVICE_SETPOINT_MODE_REPORT_SECONDS
+# after the device showed the new mode, within DEVICE_SETPOINT_SETTLE_SECONDS of the switch (cloud integrations
+# report minutes later), is that restore.
+DEVICE_SETPOINT_SETTLE_SECONDS = 300
+DEVICE_SETPOINT_MODE_REPORT_SECONDS = 60
+# A setpoint RoomMind sent this recently is its own echo when the device reports it late (sleepy TRVs).
+DEVICE_SETPOINT_ECHO_SECONDS = 900
+# A device reading older than this (room resting, processing skipped) says nothing about a change since.
+DEVICE_SETPOINT_GAP_SECONDS = 300
 # A resolved target that moved by more than this since the last active command is a deliberate change (°C)
 COMPRESSOR_HOLD_RETARGET_TOLERANCE = 0.05
 # Compressor hold: a heating unit keeps its boost until the room is this far above the heating target

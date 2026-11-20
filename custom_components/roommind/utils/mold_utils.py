@@ -15,7 +15,6 @@ import math
 
 from ..const import (
     DEFAULT_MOLD_F_RSI,
-    MIN_MOLD_GROWTH_TEMP,
     MOLD_PREVENTION_DELTAS,
     MOLD_RISK_CRITICAL,
     MOLD_RISK_OK,
@@ -42,6 +41,12 @@ def dew_point(temp: float, rh: float) -> float:
     rh_clamped = max(1.0, min(rh, 100.0))
     gamma = (_A * temp) / (_B + temp) + math.log(rh_clamped / 100.0)
     return (_B * gamma) / (_A - gamma)
+
+
+def absolute_humidity(temp: float, rh: float) -> float:
+    """Water vapour in the air in g/m³ (Magnus saturation pressure, ideal gas)."""
+    e_sat = 6.112 * math.exp((_A * temp) / (_B + temp))
+    return 216.7 * (max(0.0, min(rh, 100.0)) / 100.0) * e_sat / (273.15 + temp)
 
 
 def surface_rh(t_dew: float, t_surface: float) -> float:
@@ -103,12 +108,9 @@ def calculate_mold_risk(
         surface_temp is None when t_outdoor is unavailable.
     """
     if t_outdoor is not None:
+        # No lower temperature cut-off: a wall below 5 °C grows mold slowly, but it is
+        # where condensate forms first, and the mold grows once the wall warms up again
         t_surface = estimate_surface_temp(t_room, t_outdoor, f_rsi=f_rsi)
-
-        # Below MIN_MOLD_GROWTH_TEMP mold growth is negligible
-        if t_surface < MIN_MOLD_GROWTH_TEMP:
-            return MOLD_RISK_OK, 0.0, round(t_surface, 1)
-
         t_dew = dew_point(t_room, rh_room)
         srh = surface_rh(t_dew, t_surface)
     else:

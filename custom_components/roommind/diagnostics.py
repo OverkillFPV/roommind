@@ -10,8 +10,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
 
-from .const import DEFAULT_CONTROL_MODE, DOMAIN, VERSION
+from .const import DEFAULT_CONTROL_MODE, DOMAIN, HEATING_SYSTEM_RADIATOR, VERSION
 from .control.mpc_controller import _active_targets, _last_commands, _now, _sent_at
+from .control.residual_heat import residual_tau
 from .utils.history_store import DETAIL_FIELDS
 
 # v2 adds what a simulation needs to rebuild a setup (device capabilities, referenced
@@ -64,6 +65,7 @@ def _build_device_states(hass: HomeAssistant, devices: list[dict]) -> list[dict[
             "idle_action": dev.get("idle_action", "off"),
             "idle_fan_mode": dev.get("idle_fan_mode", ""),
             "active_fan_mode": dev.get("active_fan_mode", ""),
+            "setback_auto_off": dev.get("setback_auto_off", False),
             "setpoint_mode": dev.get("setpoint_mode", "proportional"),
             "setpoint_offset": dev.get("setpoint_offset", 0.0),
             "coil_dry": dev.get("coil_dry", "inherit"),
@@ -207,6 +209,10 @@ def _build_compressor_state(coordinator: Any) -> dict[str, Any]:
         if group_cfg and (group_cfg.master_entity or group_cfg.enforce_uniform_mode):
             entry["master_entity"] = group_cfg.master_entity
             entry["master_action"] = state.master_action
+            entry["desired_action"] = state.desired_action
+            entry["last_mode_action"] = state.last_mode_action
+            if state.switch_wait_action:
+                entry["switch_wait_action"] = state.switch_wait_action
             entry["conflict_resolution"] = group_cfg.conflict_resolution
             entry["enforce_uniform_mode"] = group_cfg.enforce_uniform_mode
             if group_cfg.action_script:
@@ -288,14 +294,23 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, config_entry: 
 
         # Residual heat state
         if coordinator:
+            # Radiators use the learned size and decay time of their afterglow (as the controller)
+            radiator = config.get("heating_system_type", "") == HEATING_SYSTEM_RADIATOR
+            scale = coordinator._model_manager.get_residual_scale(area_id) if radiator else 1.0
+            tau = coordinator._model_manager.get_residual_tau(area_id) if radiator else None
             live_diag["q_residual"] = round(
                 coordinator._residual_tracker.get_q_residual(
                     area_id,
                     config.get("heating_system_type", ""),
                     coordinator._previous_modes.get(area_id, "idle"),
+                    scale,
+                    tau,
                 ),
                 4,
             )
+            if radiator:
+                live_diag["residual_scale"] = round(scale, 3)
+                live_diag["residual_decay_minutes"] = round(residual_tau("radiator", tau), 1)
             live_diag["q_rebound"] = round(coordinator._rebound_tracker.get_charge(area_id), 4)
 
         # Schedule entity state

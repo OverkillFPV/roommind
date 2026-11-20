@@ -1,4 +1,4 @@
-"""A setback device switches off after an hour of idle when the MPC plan expects no run in its mode (#255)."""
+"""A setback device with setback_auto_off switches off after an hour of idle when the MPC plan expects no run in its mode (#255)."""
 
 from __future__ import annotations
 
@@ -41,17 +41,18 @@ def _state(hvac: str, temperature: float):
     return state
 
 
-def _devices(idle_action: str = "setback") -> list[dict]:
-    return [
-        {
-            "entity_id": EID,
-            "type": "ac",
-            "role": "auto",
-            "heating_system_type": "",
-            "idle_action": idle_action,
-            "idle_fan_mode": "",
-        }
-    ]
+def _devices(idle_action: str = "setback", auto_off: bool = True) -> list[dict]:
+    device = {
+        "entity_id": EID,
+        "type": "ac",
+        "role": "auto",
+        "heating_system_type": "",
+        "idle_action": idle_action,
+        "idle_fan_mode": "",
+    }
+    if auto_off:
+        device["setback_auto_off"] = True
+    return [device]
 
 
 def _idle_for(minutes: float) -> float:
@@ -67,11 +68,12 @@ def _controller(
     has_external_sensor=True,
     idle_since: float | None = None,
     previous_mode: str = MODE_IDLE,
+    auto_off: bool = True,
 ):
     hass = build_hass()
     hass.states.get = MagicMock(return_value=_state(hvac, temperature))
     room = make_room(thermostats=[], acs=[EID])
-    room["devices"] = _devices()
+    room["devices"] = _devices(auto_off=auto_off)
     ctrl = MPCController(
         hass,
         room,
@@ -126,6 +128,17 @@ async def test_heat_setback_turns_off_when_no_heating_is_planned(monkeypatch):
 
     assert _turned_off(hass)
     assert 19.0 not in [d["temperature"] for d in _calls(hass, "set_temperature")]
+
+
+@pytest.mark.asyncio
+async def test_setback_without_auto_off_never_turns_off(monkeypatch):
+    hass, ctrl = _controller("heat", 21.0, [MODE_IDLE] * 36, monkeypatch, auto_off=False)
+
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+
+    assert not _turned_off(hass)
+    assert 19.0 in [d["temperature"] for d in _calls(hass, "set_temperature")]
 
 
 @pytest.mark.asyncio
@@ -281,3 +294,206 @@ async def test_async_idle_device_release_ignores_other_idle_actions():
     )
 
     assert [d["hvac_mode"] for d in _calls(hass, "set_hvac_mode")] == ["fan_only"]
+
+
+# --- Live display of the setback (#509) ---
+
+
+@pytest.mark.asyncio
+async def test_a_held_setback_is_shown_with_the_earliest_off_time(monkeypatch):
+    idle_since = _idle_for(20)
+    _, ctrl = _controller("heat", 21.0, [MODE_IDLE] * 36, monkeypatch, idle_since=idle_since)
+
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+
+    assert ctrl.setback_display() == {"devices": [EID], "until": pytest.approx(idle_since + SETBACK_HOLD_MINUTES * 60)}
+
+
+@pytest.mark.asyncio
+async def test_a_setback_already_at_its_target_is_still_shown(monkeypatch):
+    """Nothing is sent when the unit already sits at the setback target; it is held all the same."""
+    hass, ctrl = _controller("heat", 19.0, [MODE_IDLE] * 36, monkeypatch, auto_off=False)
+
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+
+    assert _calls(hass, "set_temperature") == []
+    assert ctrl.setback_display() == {"devices": [EID], "until": None}
+
+
+@pytest.mark.asyncio
+async def test_a_setback_that_could_not_be_sent_is_not_shown(monkeypatch):
+    """The unit did not take the lowered setpoint, so it is not known to sit at the setback."""
+    hass, ctrl = _controller("heat", 21.0, [MODE_IDLE] * 36, monkeypatch, auto_off=False)
+    hass.services.async_call.side_effect = Exception("unit offline")
+
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+
+    assert ctrl.setback_display() is None
+    assert not await async_idle_device(hass, EID, _devices(auto_off=False), targets=HEAT_TARGETS)
+
+
+@pytest.mark.asyncio
+async def test_a_setback_the_plan_keeps_past_the_hour_shows_no_time(monkeypatch):
+    _, ctrl = _controller("heat", 21.0, _with_run_at(3, MODE_HEATING), monkeypatch)
+
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+
+    assert ctrl.setback_display() == {"devices": [EID], "until": None}
+
+
+@pytest.mark.asyncio
+async def test_a_setback_without_a_plan_shows_no_time(monkeypatch):
+    """Managed Mode (and bang-bang) never end a setback, so there is no time to count down."""
+    _, ctrl = _controller(
+        "heat", 21.0, [MODE_IDLE] * 36, monkeypatch, has_external_sensor=False, idle_since=_idle_for(5)
+    )
+
+    await ctrl.async_evaluate(None, TargetTemps(heat=21.0, cool=None))
+    await ctrl.async_apply(MODE_IDLE, TargetTemps(heat=21.0, cool=None), power_fraction=0.0)
+
+    assert ctrl.setback_display() == {"devices": [EID], "until": None}
+
+
+@pytest.mark.asyncio
+async def test_released_forced_off_and_held_devices_are_no_setback(monkeypatch):
+    _, ctrl = _controller("heat", 21.0, [MODE_IDLE] * 36, monkeypatch)
+    mode, _ = ctrl._evaluate_mpc(21.3, HEAT_TARGETS)
+
+    await ctrl.async_apply(mode, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+    assert ctrl.setback_display() is None  # released: switched off
+
+    await ctrl.async_apply(MODE_IDLE, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3, force_off=True)
+    assert ctrl.setback_display() is None
+
+    await ctrl.async_apply(MODE_IDLE, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3, compressor_forced_on={EID})
+    assert ctrl.setback_display() is None
+
+
+@pytest.mark.asyncio
+async def test_a_running_room_shows_no_setback(monkeypatch):
+    _, ctrl = _controller("heat", 21.0, [MODE_IDLE] * 36, monkeypatch, idle_since=_idle_for(5))
+    await ctrl.async_apply(MODE_IDLE, HEAT_TARGETS, power_fraction=0.0, current_temp=21.3)
+    assert ctrl.setback_display() is not None
+
+    await ctrl.async_apply(MODE_HEATING, HEAT_TARGETS, power_fraction=0.5, current_temp=20.0)
+
+    assert ctrl.setback_display() is None
+
+
+@pytest.mark.asyncio
+async def test_setback_ends_in_off_when_its_group_runs_the_other_way(monkeypatch):
+    """All in the same mode: a unit held in heat blocks a group that cools (#533)."""
+    hass, ctrl = _controller("heat", 21.0, [MODE_IDLE], monkeypatch, auto_off=False)
+
+    await ctrl.async_apply(
+        MODE_IDLE,
+        HEAT_TARGETS,
+        power_fraction=0.0,
+        current_temp=21.3,
+        compressor_conflicting_modes={EID: frozenset({"heat"})},
+    )
+
+    assert _turned_off(hass)
+    assert ctrl.setback_eids == []
+
+
+@pytest.mark.asyncio
+async def test_setback_in_the_group_mode_stays(monkeypatch):
+    hass, ctrl = _controller("heat", 21.0, [MODE_IDLE], monkeypatch, auto_off=False)
+
+    await ctrl.async_apply(
+        MODE_IDLE,
+        HEAT_TARGETS,
+        power_fraction=0.0,
+        current_temp=21.3,
+        compressor_conflicting_modes={EID: frozenset({"cool"})},
+    )
+
+    assert not _turned_off(hass)
+    assert [d["temperature"] for d in _calls(hass, "set_temperature")] == [19.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [MODE_HEATING, MODE_COOLING])
+async def test_unit_held_back_by_its_group_does_not_keep_the_other_mode(mode, monkeypatch):
+    """A room the group holds back idles its unit; a setback must not keep the group's opposite mode (#533)."""
+    hvac = "cool" if mode == MODE_HEATING else "heat"
+    hass, ctrl = _controller(hvac, 24.0, [MODE_IDLE], monkeypatch, auto_off=False)
+
+    await ctrl.async_apply(
+        mode,
+        HEAT_TARGETS,
+        power_fraction=0.5,
+        current_temp=22.0,
+        compressor_forced_off={EID},
+        compressor_conflicting_modes={EID: frozenset({hvac})},
+    )
+
+    assert _turned_off(hass)
+
+
+@pytest.mark.asyncio
+async def test_fan_only_idle_ends_in_off_while_its_group_heats(monkeypatch):
+    """Heating shares the outdoor unit with no fan (#533)."""
+    hass, ctrl = _controller("fan_only", 21.0, [MODE_IDLE], monkeypatch, auto_off=False)
+    ctrl._devices[0]["idle_action"] = "fan_only"
+    hass.states.get.return_value.attributes["hvac_modes"] = ["heat", "cool", "fan_only", "off"]
+
+    await ctrl.async_apply(
+        MODE_IDLE,
+        HEAT_TARGETS,
+        power_fraction=0.0,
+        current_temp=21.3,
+        compressor_conflicting_modes={EID: frozenset({"cool", "dry", "fan_only"})},
+    )
+
+    assert _turned_off(hass)
+
+
+@pytest.mark.asyncio
+async def test_a_sitting_out_unit_does_not_keep_its_fan_on_while_its_group_heats():
+    """Heat only room with a TRV: its AC sits the run out, and fan_only would block the group (#476, #533)."""
+    hass = build_hass()
+    ac_state = _state("fan_only", 21.0)
+    ac_state.attributes["hvac_modes"] = ["heat", "cool", "fan_only", "off"]
+    trv_state = _state("heat", 25.0)
+    hass.states.get = MagicMock(side_effect=lambda eid: ac_state if eid == EID else trv_state)
+    room = make_room(thermostats=["climate.trv"], acs=[EID], climate_mode="heat_only")
+    for dev in room["devices"]:
+        if dev["entity_id"] == EID:
+            dev["idle_action"] = "fan_only"
+    ctrl = MPCController(
+        hass, room, model_manager=RoomModelManager(), outdoor_temp=5.0, settings={}, has_external_sensor=True
+    )
+
+    await ctrl.async_apply(
+        MODE_HEATING,
+        HEAT_TARGETS,
+        power_fraction=0.5,
+        current_temp=20.0,
+        compressor_conflicting_modes={EID: frozenset({"cool", "dry", "fan_only"})},
+    )
+
+    assert {"entity_id": EID, "hvac_mode": "off"} in _calls(hass, "set_hvac_mode")
+
+
+@pytest.mark.asyncio
+async def test_a_unit_held_in_its_min_run_is_not_switched_off_while_the_room_heats_on(monkeypatch):
+    """Held by its group in the old mode during its min run, in a room that still heats otherwise (#533)."""
+    hass, ctrl = _controller("cool", 24.0, [MODE_HEATING], monkeypatch, auto_off=False)
+
+    await ctrl.async_apply(
+        MODE_HEATING,
+        HEAT_TARGETS,
+        power_fraction=0.5,
+        current_temp=20.0,
+        compressor_forced_off={EID},
+        compressor_forced_on={EID},
+    )
+
+    assert not _turned_off(hass)
+    assert "heat" not in [d.get("hvac_mode") for d in _calls(hass, "set_hvac_mode")]

@@ -26,6 +26,14 @@ def compute_metrics(run: RunData) -> dict[str, Any]:
         "devices": {eid: _device_metrics(run, eid, duration_h) for eid in _device_ids(run)},
         "covers": {c.entity_id: _cover_metrics(run, c.entity_id, c.room) for c in _covers(run)},
         "model": _model_metrics(run),
+        "appliances": {
+            a.entity_id: _appliance_metrics(run, a.entity_id, duration_h) for a in run.scenario.all_appliances()
+        },
+        "sensors": {
+            s.entity_id: _solar_sensor_metrics(run, s.entity_id, s.params)
+            for s in run.scenario.all_sensors()
+            if s.kind == "solar"
+        },
     }
 
 
@@ -60,6 +68,69 @@ def _upcoming_heat(run: RunData, area: str) -> list[tuple[float, float | None]]:
     return out
 
 
+RUN_OVERSHOOT_WINDOW_S = 5400  # after a heating run, the peak within this window (or until the next run)
+RUN_PEAK_LOOKAHEAD_S = 3600  # targets this far past the peak count (the block a pre-heat was for)
+RUN_MERGE_GAP_S = 600  # idle stretches up to this long inside a run (a one-cycle blip) do not split it
+
+
+def _run_overshoot(run: RunData, area: str) -> dict[str, Any]:
+    """Peak of the reported room temperature after each heating run, past the highest heat
+    target of the run itself and from its end to an hour past the peak (a pre-heat is judged
+    against the block it was for, a run into a setback against the block it ended in).
+
+    Runs with an open window are left out; a run still going at the end of the scenario is
+    none. ``run_overshoot_mean_k`` averages the overshoot over all judged runs, a run that
+    stayed below its target counting as 0.
+    """
+    rows = [(o["t"], o["rooms"].get(area) or {}) for o in run.observer]
+    rows = [(t, r) for t, r in rows if r.get("current_temp") is not None]
+    peaks: list[float] = []
+    i, n = 0, len(rows)
+    while i < n:
+        if rows[i][1].get("mode") != "heating":
+            i += 1
+            continue
+        j = i
+        while True:
+            while j < n and rows[j][1].get("mode") == "heating":
+                j += 1
+            k = j
+            while k < n and rows[k][1].get("mode") != "heating" and rows[k][0] - rows[j - 1][0] <= RUN_MERGE_GAP_S:
+                k += 1
+            if k < n and k > j and rows[k][1].get("mode") == "heating":
+                j = k
+                continue
+            break
+        if j >= n:
+            break
+        end = rows[j][0]
+        targets = [r["heat_target"] for _, r in rows[i:j] if r.get("heat_target") is not None]
+        window = any(r.get("window_open") for _, r in rows[i:j])
+        peak = rows[j][1]["current_temp"]
+        k = j
+        while k < n and rows[k][0] - end <= RUN_OVERSHOOT_WINDOW_S and rows[k][1].get("mode") != "heating":
+            r = rows[k][1]
+            window = window or bool(r.get("window_open"))
+            if r["current_temp"] > peak:
+                peak = r["current_temp"]
+            k += 1
+        peak_k = max(range(j, k), key=lambda m: rows[m][1]["current_temp"]) if k > j else j
+        # up to an hour past the peak: a pre-heat may peak just before its block starts
+        m = peak_k
+        while m < n and rows[m][0] - rows[peak_k][0] <= RUN_PEAK_LOOKAHEAD_S:
+            m += 1
+        targets += [r["heat_target"] for _, r in rows[j:m] if r.get("heat_target") is not None]
+        if targets and not window:
+            peaks.append(peak - max(targets))
+        i = j
+    return {
+        "heat_runs_judged": len(peaks),
+        "run_overshoot_max_k": round(max(peaks), 2) if peaks else None,
+        "run_overshoot_mean_k": round(sum(max(p, 0.0) for p in peaks) / len(peaks), 2) if peaks else None,
+        "runs_over_half_k": sum(1 for p in peaks if p > 0.5),
+    }
+
+
 def _room_metrics(run: RunData, area: str) -> dict[str, Any]:
     """Comfort metrics against the targets RoomMind reported.
 
@@ -81,6 +152,13 @@ def _room_metrics(run: RunData, area: str) -> dict[str, Any]:
 
     ``heating_without_source_h``: RoomMind decided to heat, but heat source
     orchestration picked no source, so nothing ran.
+
+    ``mold_prevention_switches`` / ``mold_prevention_h``: how often mold prevention
+    switched on or off and how long it ran; a boost that drops right below the
+    warning flaps every few minutes.
+
+    ``heating_h_cheap`` / ``_normal`` / ``_expensive``: heating hours by the electricity
+    price level RoomMind reported, ``price_shift_h`` how long the price moved the target.
     """
     under = over = over_heat = coast_kh = above_band = in_band = covered = 0.0
     upcoming = _upcoming_heat(run, area)
@@ -163,8 +241,41 @@ def _room_metrics(run: RunData, area: str) -> dict[str, Any]:
         later = run.sample_at(o["t"] + 1800)
         if later and later["t"] > o["t"] + 1700:
             pred_err.append(abs(later["rooms"][area]["t_air"] - pred))
+    mold_switches = 0
+    mold_h = 0.0
+    prev_mold: tuple[float, bool] | None = None
+    by_level = {"cheap": 0.0, "normal": 0.0, "expensive": 0.0}
+    shifted_h = 0.0
+    prev_obs: tuple[float, dict[str, Any]] | None = None
+    for o in run.observer:
+        room_o = o["rooms"].get(area) or {}
+        if prev_obs is not None:
+            dt = (o["t"] - prev_obs[0]) / 3600
+            level = prev_obs[1].get("price_level")
+            if decided_mode(prev_obs[1]) == "heating" and level in by_level:
+                by_level[level] += dt
+            if prev_obs[1].get("price_shift_heat") or prev_obs[1].get("price_shift_cool"):
+                shifted_h += dt
+        prev_obs = (o["t"], room_o)
+    for o in run.observer:
+        active = bool((o["rooms"].get(area) or {}).get("mold_prevention_active"))
+        if prev_mold is not None:
+            if active != prev_mold[1]:
+                mold_switches += 1
+            if prev_mold[1]:
+                mold_h += (o["t"] - prev_mold[0]) / 3600
+        prev_mold = (o["t"], active)
     temps = [s["rooms"][area]["t_air"] for s in run.samples]
     return {
+        **_run_overshoot(run, area),
+        **_air_quality_metrics(run, area),
+        **_humidity_metrics(run, area),
+        "heating_h_cheap": round(by_level["cheap"], 2),
+        "heating_h_normal": round(by_level["normal"], 2),
+        "heating_h_expensive": round(by_level["expensive"], 2),
+        "price_shift_h": round(shifted_h, 2),
+        "mold_prevention_switches": mold_switches,
+        "mold_prevention_h": round(mold_h, 2),
         "undershoot_kh": round(under, 3),
         "overshoot_kh": round(over, 3),
         "heat_overshoot_kh": round(over_heat, 3),
@@ -181,16 +292,203 @@ def _room_metrics(run: RunData, area: str) -> dict[str, Any]:
     }
 
 
+RH_THRESHOLDS = (60, 70, 80)
+
+
+def _humidity_metrics(run: RunData, area: str) -> dict[str, Any]:
+    """True room humidity: ``rh_max`` / ``rh_mean`` and hours at or above 60/70/80 % (``rh_over_<n>_h``)."""
+    over = dict.fromkeys(RH_THRESHOLDS, 0.0)
+    values: list[float] = []
+    prev: tuple[float, float] | None = None
+    for s in run.samples:
+        rh = s["rooms"][area].get("rh")
+        if rh is None:
+            continue
+        values.append(rh)
+        if prev is not None:
+            for th in RH_THRESHOLDS:
+                if prev[1] >= th:
+                    over[th] += (s["t"] - prev[0]) / 3600
+        prev = (s["t"], rh)
+    return {
+        "rh_max": max(values) if values else None,
+        "rh_mean": round(sum(values) / len(values), 1) if values else None,
+        **{f"rh_over_{th}_h": round(h, 2) for th, h in over.items()},
+    }
+
+
+def _appliance_metrics(run: RunData, eid: str, duration_h: float) -> dict[str, Any]:
+    """Fans, dehumidifiers, humidifiers (ground truth from the samples, commands from the log).
+
+    ``on_h`` / ``power_ons``: switched on (what HA shows); ``run_h`` / ``starts`` /
+    ``shortest_run_min`` / ``longest_run_min``: actually running (a device hygrostat idles
+    an appliance that is on). ``manual_switches``: ``device.manual`` actions on it (a hand at
+    the device, no command). ``moisture_removed_kg`` / ``moisture_added_kg``: water taken
+    from or given to the room air (an exhaust fan's share is the exchange with outdoor air).
+    """
+    cmds = [c for c in run.commands if c["entity_id"] == eid]
+    manual = sum(
+        1
+        for e in run.events
+        if e.get("type") == "action"
+        and e.get("action") == "device.manual"
+        and (e.get("args") or {}).get("entity_id") == eid
+        and e.get("ok", True)
+    )
+    on_h = run_h = electric_wh = heat_wh = removed = added = 0.0
+    starts = power_ons = 0
+    runs: list[float] = []
+    run_start: float | None = None
+    prev: tuple[float, dict[str, Any]] | None = None
+    for s in run.samples:
+        a = (s.get("appliances") or {}).get(eid)
+        if a is None:
+            continue
+        if prev is not None:
+            dt_h = (s["t"] - prev[0]) / 3600
+            p = prev[1]
+            on_h += dt_h if p["on"] else 0.0
+            run_h += dt_h if p["running"] else 0.0
+            electric_wh += p["electric_w"] * dt_h
+            heat_wh += p["heat_w"] * dt_h
+            water = p["moisture_g_h"] * dt_h / 1000
+            removed += max(0.0, -water)
+            added += max(0.0, water)
+        was_on = prev[1]["on"] if prev else False
+        was_running = prev[1]["running"] if prev else False
+        if a["on"] and not was_on:
+            power_ons += 1
+        if a["running"] and not was_running:
+            starts += 1
+            run_start = s["t"]
+        elif not a["running"] and was_running and run_start is not None:
+            runs.append((s["t"] - run_start) / 60)
+            run_start = None
+        prev = (s["t"], a)
+    return {
+        "commands": len(cmds),
+        "commands_per_hour": round(len(cmds) / duration_h, 2),
+        "redundant_commands": sum(1 for c in cmds if c.get("result") == "accepted:no_change"),
+        "rejected_commands": sum(1 for c in cmds if str(c.get("result", "")).startswith("rejected")),
+        "manual_switches": manual,
+        "power_ons": power_ons,
+        "on_h": round(on_h, 2),
+        "starts": starts,
+        "run_h": round(run_h, 2),
+        "shortest_run_min": round(min(runs), 1) if runs else None,
+        "longest_run_min": round(max(runs), 1) if runs else None,
+        "electric_kwh": round(electric_wh / 1000, 3),
+        "heat_kwh": round(heat_wh / 1000, 3),
+        "moisture_removed_kg": round(removed, 3),
+        "moisture_added_kg": round(added, 3),
+    }
+
+
+def _solar_sensor_metrics(run: RunData, eid: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Reported value of a solar sensor: ``max``, ``mean`` over the hours with sun on it
+    (``sun_h``, value > 0) and ``saturated_h`` (at its ``max_value``)."""
+    cap = params.get("max_value")
+    values: list[float] = []
+    sun_h = sat_h = 0.0
+    prev: tuple[float, float | None] | None = None
+    for s in run.samples:
+        v = (s.get("solar_sensors") or {}).get(eid)
+        if prev is not None and prev[1] is not None and prev[1] > 0:
+            dt_h = (s["t"] - prev[0]) / 3600
+            sun_h += dt_h
+            if cap is not None and prev[1] >= float(cap):
+                sat_h += dt_h
+        if v is not None and v > 0:
+            values.append(v)
+        prev = (s["t"], v)
+    return {
+        "max": max(values) if values else 0,
+        "mean": round(sum(values) / len(values), 1) if values else 0,
+        "sun_h": round(sun_h, 2),
+        "saturated_h": round(sat_h, 2),
+    }
+
+
+def _air_quality_metrics(run: RunData, area: str) -> dict[str, Any]:
+    """Air quality and the ventilation RoomMind runs for it (#267).
+
+    ``air_bad_h``: how long RoomMind judged the air bad. ``ventilation_starts`` /
+    ``ventilation_on_h``: runs of the room's ventilation that RoomMind switched on;
+    ``ventilation_shortest_run_min`` is the shortest one RoomMind ended itself (min run
+    check), None without one; ``ventilation_ended_by_hand``: runs that ended because the
+    unit was switched off by someone (it read off while RoomMind still ran it).
+    ``co2_max`` / ``co2_over_1000_h`` from the reading RoomMind saw.
+    """
+    unit = (run.rooms_config().get(area) or {}).get("ventilation_entity")
+    bad_h = on_h = over_h = 0.0
+    starts = by_hand = 0
+    unit_off_while_active = False
+    runs: list[float] = []
+    run_start: float | None = None
+    co2_max: float | None = None
+    prev: tuple[float, dict[str, Any]] | None = None
+    for o in run.observer:
+        room = o["rooms"].get(area) or {}
+        if prev is not None:
+            dt = (o["t"] - prev[0]) / 3600
+            if prev[1].get("air_quality_bad"):
+                bad_h += dt
+            if prev[1].get("ventilation_active"):
+                on_h += dt
+            if (prev[1].get("co2") or 0) >= 1000:
+                over_h += dt
+        active = bool(room.get("ventilation_active"))
+        if active and run_start is None:
+            starts += 1
+            run_start = o["t"]
+            unit_off_while_active = False
+        elif not active and run_start is not None:
+            if unit_off_while_active:
+                by_hand += 1
+            else:
+                runs.append((o["t"] - run_start) / 60)
+            run_start = None
+        if active and unit and (o.get("states") or {}).get(unit) == "off":
+            unit_off_while_active = True
+        co2 = room.get("co2")
+        if co2 is not None:
+            co2_max = co2 if co2_max is None else max(co2_max, co2)
+        prev = (o["t"], room)
+    return {
+        "air_bad_h": round(bad_h, 2),
+        "ventilation_starts": starts,
+        "ventilation_on_h": round(on_h, 2),
+        "ventilation_shortest_run_min": round(min(runs), 1) if runs else None,
+        "ventilation_ended_by_hand": by_hand,
+        "co2_max": co2_max,
+        "co2_over_1000_h": round(over_h, 2),
+    }
+
+
 def _device_metrics(run: RunData, eid: str, duration_h: float) -> dict[str, Any]:
     """Per device; ``commands*`` count only the climate entity.
 
     ``valve_travel_per_day`` (TRVs): summed valve movement in full strokes per day, from the
     samples, so reversals within one sample interval are missed. ``valve_commands_per_hour``
     (TRVs with direct valve control): ``number.set_value`` calls on its opening/closing entities.
+    ``setpoint_lost_h``: in heat, RoomMind's last accepted setpoint lies above the room, but the
+    device's own setpoint does not (it dropped the value), so the device cannot heat.
+    ``restarts_10min``: commanded runs that start within 10 min of the previous run's end
+    (a stop RoomMind took back right away).
     """
     cmds = [c for c in run.commands if c["entity_id"] == eid]
+    lost_h = 0.0
+    sent_i = -1
     spec = next(d for d in run.scenario.all_devices() if d.entity_id == eid)
     numbers = set(spec.valve_numbers().values())
+    unit_f = str(spec.capabilities.get("unit", "C")).upper() == "F"
+    sent_temps = [
+        (c["t"], float(c["data"]["temperature"]))
+        for c in cmds
+        if c["service"] == "set_temperature"
+        and c["data"].get("temperature") is not None
+        and str(c.get("result", "")).startswith("accepted")
+    ]
     valve_cmds = [c for c in run.commands if c["entity_id"] in numbers]
     travel: float | None = None
     last_valve: float | None = None
@@ -206,8 +504,15 @@ def _device_metrics(run: RunData, eid: str, duration_h: float) -> dict[str, Any]
         d = s["devices"].get(eid)
         if d is None:
             continue
+        while sent_i + 1 < len(sent_temps) and sent_temps[sent_i + 1][0] <= s["t"]:
+            sent_i += 1
         if prev is not None:
             dt_h = (s["t"] - prev) / 3600
+            if sent_i >= 0 and d.get("mode") == "heat" and d.get("target") is not None:
+                room_t = s["rooms"][spec.room]["t_air"]
+                to_c = (lambda v: (v - 32.0) * 5.0 / 9.0) if unit_f else (lambda v: v)
+                if to_c(sent_temps[sent_i][1]) > room_t and to_c(float(d["target"])) <= room_t:
+                    lost_h += dt_h
             electric_wh += d["electric_w"] * dt_h
             heat_wh += d["heat_w"] * dt_h
             if d["active"]:
@@ -229,6 +534,7 @@ def _device_metrics(run: RunData, eid: str, duration_h: float) -> dict[str, Any]
         "rejections": sorted({c["result"] for c in rejected}),
         "commanded_runs": len(runs),
         "shortest_run_min": round(min(iv.duration for iv in runs) / 60, 1) if runs else None,
+        "restarts_10min": sum(1 for a, b in zip(runs, runs[1:], strict=False) if b.start - a.end < 600),
         "device_starts": starts,
         "starts_per_day": round(starts / days, 2),
         "active_h": round(active_h, 2),
@@ -237,6 +543,7 @@ def _device_metrics(run: RunData, eid: str, duration_h: float) -> dict[str, Any]
         # every device gets the keys: the report table takes its columns from the first row
         "valve_travel_per_day": round(travel / days, 2) if travel is not None else None,
         "valve_commands_per_hour": round(len(valve_cmds) / duration_h, 2) if numbers else None,
+        "setpoint_lost_h": round(lost_h, 2),
     }
 
 

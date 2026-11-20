@@ -240,3 +240,101 @@ class Rounding(Quirk):
 @register("off_unsupported")
 class OffUnsupported(Quirk):
     """Marker: the profile omits "off" from hvac_modes (#199); HA rejects the service."""
+
+
+@register("mode_switch_restores_setpoint")
+class ModeSwitchRestoresSetpoint(Quirk):
+    """Switched on from off, the device takes the new setpoint and falls back to the one it
+    had before ``delay_s`` later, also when the setpoint came right after the mode (tado X over
+    Matter: heat and 29 °C in the same second, 5 °C again 3 s later). A setpoint sent once
+    the fallback is through stays (the real unit kept the 29 sent again 5.5 min later)."""
+
+    def __init__(self, params: dict[str, Any]) -> None:
+        super().__init__(params)
+        self.before: tuple[str, float] | None = None
+        self.restore_at: float | None = None
+        self.restore_to: float | None = None
+
+    def before_command(self, dev, service, data, now):  # noqa: ANN001, ANN201
+        self.before = (dev.hvac_mode, dev.target)
+        return None
+
+    def after_command(self, dev, service, data, now, result):  # noqa: ANN001, ANN201
+        if not result.ok or self.before is None:
+            return
+        mode_before, target_before = self.before
+        if mode_before == "off" and dev.hvac_mode != "off":
+            self.restore_at = now + float(self.p.get("delay_s", 3))
+            self.restore_to = target_before
+
+    def on_step(self, dev, dt, now):  # noqa: ANN001, ANN201
+        if self.restore_at is not None and now >= self.restore_at:
+            if dev.hvac_mode != "off" and self.restore_to is not None:
+                dev.target = self.restore_to
+            self.restore_at = None
+
+    def snapshot(self):  # noqa: ANN201
+        return {"restore_at": self.restore_at, "restore_to": self.restore_to}
+
+    def restore(self, data):  # noqa: ANN001, ANN201
+        self.restore_at = data.get("restore_at")
+        self.restore_to = data.get("restore_to")
+
+
+@register("lost_off")
+class LostOff(Quirk):
+    """The off (and the setpoint sent right before it) never reaches the device, while HA shows
+    what the integration assumed after sending: "off" at the sent setpoint. The device runs on;
+    ``revert_after_s`` later its next report shows its own setpoint again, the mode stays "off"
+    (Zigbee2MQTT and a Tuya TRV that heated for 13 h behind "off"). From ``after_s`` after HA
+    start, the next ``count`` offs sent while the device is on are lost."""
+
+    def __init__(self, params: dict[str, Any]) -> None:
+        super().__init__(params)
+        self.lost = 0
+        self.shown: float | None = None
+        self.since: float | None = None
+        self.setpoint_sent: tuple[float, float] | None = None  # (time, setpoint before it)
+
+    def before_command(self, dev, service, data, now):  # noqa: ANN001, ANN201
+        if service == "set_temperature" and not data.get("hvac_mode"):
+            self.setpoint_sent = (now, dev.target)
+            return None
+        if service != "set_hvac_mode" or data.get("hvac_mode") != "off":
+            return None
+        if now - dev.boot_time < float(self.p.get("after_s", 0)) or self.lost >= int(self.p.get("count", 1)):
+            return None
+        if dev.hvac_mode == "off" and self.since is None:
+            return None
+        self.lost += 1
+        shown = dev.target
+        if self.setpoint_sent is not None and now - self.setpoint_sent[0] <= 2:
+            dev.target = self.setpoint_sent[1]
+        if self.since is None:
+            self.shown, self.since = shown, now
+        return CommandResult(True)
+
+    def after_command(self, dev, service, data, now, result):  # noqa: ANN001, ANN201
+        # An off that got through, or a switch-on: the integration shows the device again
+        mode = data.get("hvac_mode")
+        if self.since is not None and result.ok and (result.changed or mode not in (None, "off")):
+            self.shown = self.since = None
+
+    def transform_attributes(self, dev, attrs, now):  # noqa: ANN001, ANN201
+        if self.since is None:
+            return attrs
+        out = {**attrs, "hvac_mode": "off"}
+        if now - self.since < float(self.p.get("revert_after_s", 2200)):
+            out["temperature"] = self.shown
+        return out
+
+    def state_override(self, dev, now):  # noqa: ANN001, ANN201
+        return "off" if self.since is not None else None
+
+    def snapshot(self):  # noqa: ANN201
+        return {"lost": self.lost, "shown": self.shown, "since": self.since}
+
+    def restore(self, data):  # noqa: ANN001, ANN201
+        self.lost = data.get("lost", 0)
+        self.shown = data.get("shown")
+        self.since = data.get("since")

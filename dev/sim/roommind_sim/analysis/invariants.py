@@ -347,6 +347,32 @@ def window_open_pauses(run: RunData, grace_s: float = 120.0) -> list[Violation]:
     return out
 
 
+def no_cover_lowered_over_open_window(run: RunData, grace_s: float = COORDINATOR_CYCLE_S) -> list[Violation]:
+    """No cover of a room goes down while one of its window sensors is open (#268).
+
+    Only rooms with window sensors count. ``grace_s`` after the opening covers a
+    command from the cycle that still saw the window closed.
+    """
+    out: list[Violation] = []
+    rooms_cfg = run.rooms_config()
+    windows = run.window_open_intervals()
+    room_of = {c.entity_id: c.room for r in run.scenario.rooms.values() for c in r.covers}
+    for c in run.commands:
+        area = room_of.get(c["entity_id"])
+        if area is None or not (rooms_cfg.get(area) or {}).get("window_sensors"):
+            continue
+        if not any(iv.start + grace_s <= c["t"] <= iv.end for iv in windows.get(area, [])):
+            continue
+        sample = run.sample_at(c["t"]) or {}
+        position = (sample.get("covers", {}).get(c["entity_id"]) or {}).get("position", 100.0)
+        data = c.get("data") or {}
+        if c["service"] == "close_cover" or (
+            c["service"] == "set_cover_position" and float(data.get("position", 100)) < position
+        ):
+            out.append(Violation(c["t"], f"{c['entity_id']} {c['service']} {data} with a window open"))
+    return out
+
+
 def no_heat_and_cool_same_group(run: RunData) -> list[Violation]:
     out: list[Violation] = []
     for group in _groups(run):
@@ -356,6 +382,31 @@ def no_heat_and_cool_same_group(run: RunData) -> list[Violation]:
             if "heating" in actions and "cooling" in actions:
                 out.append(Violation(s["t"], f"group {group.get('id')}: heating and cooling at once"))
                 break
+    return out
+
+
+def uniform_group_one_mode(run: RunData, grace_s: float = 180.0) -> list[Violation]:
+    """A group with "All in the same mode" never has units heating and cooling at once (#533).
+
+    Mode, not action: an idle unit held in heat at its setback target still keeps an outdoor
+    unit that needs one mode from switching. Dry and fan share the circuit with cooling, not
+    with heating; the master counts like a member. ``grace_s`` covers a cycle plus the report.
+    """
+    out: list[Violation] = []
+    for group in _groups(run):
+        if not group.get("enforce_uniform_mode"):
+            continue
+        units = list(group.get("members", [])) + ([group["master_entity"]] if group.get("master_entity") else [])
+        mixed_since: float | None = None
+        for s in run.samples:
+            modes = {(s["devices"].get(m) or {}).get("mode") for m in units}
+            if "heat" in modes and modes & {"cool", "dry", "fan_only"}:
+                mixed_since = s["t"] if mixed_since is None else mixed_since
+                if s["t"] - mixed_since > grace_s:
+                    out.append(Violation(mixed_since, f"group {group.get('id')}: heating next to cool, dry or fan"))
+                    break
+            else:
+                mixed_since = None
     return out
 
 
@@ -451,7 +502,9 @@ INVARIANTS: dict[str, Callable[..., list[Violation]]] = {
         no_full_cooling_at_target,
         no_rejected_commands,
         window_open_pauses,
+        no_cover_lowered_over_open_window,
         no_heat_and_cool_same_group,
+        uniform_group_one_mode,
         no_commands_when_climate_off,
         max_commands_per_hour,
     )

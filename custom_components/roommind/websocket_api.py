@@ -20,9 +20,22 @@ from .const import (
     DEFAULT_CONFLICT_RESOLUTION,
     DEFAULT_CONTROL_MODE,
     DOMAIN,
+    HUMIDITY_DEVICE_DOMAINS,
+    HUMIDITY_LIMIT_GAP,
+    MAX_CO2_THRESHOLD,
+    MAX_HUMIDITY_MAX,
+    MAX_HUMIDITY_MIN,
+    MAX_PRICE_SHIFT_K,
+    MAX_TARGET_TEMP,
+    MIN_CO2_THRESHOLD,
+    MIN_HUMIDITY_MAX,
+    MIN_HUMIDITY_MIN,
     MIN_OCCUPANCY_ECO_DELAY_MINUTES,
+    MIN_TARGET_TEMP,
     OVERRIDE_CUSTOM,
     OVERRIDE_TYPES,
+    ROOM_FAN_MODES,
+    VENTILATION_DOMAINS,
     build_override_live,
     is_override_suppressed,
 )
@@ -33,6 +46,7 @@ from .services.analytics_service import (
     _safe_float,  # noqa: F401 - re-exported for tests
     build_analytics_data,
 )
+from .utils.area_utils import REST_SWITCHED_OFF, ha_floor_order, rooms_with_area, rooms_without_area
 from .utils.device_utils import (
     COIL_DRY_INHERIT,
     COIL_DRY_MODE_FAN_ONLY,
@@ -49,7 +63,7 @@ from .utils.device_utils import (
     ValveEntities,
     get_valve_entities,
 )
-from .utils.schedule_utils import mask_override_band, override_preset_band
+from .utils.schedule_utils import mask_override_band, next_schedule_change, override_preset_band
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,6 +114,7 @@ if TYPE_CHECKING:
     from homeassistant.components.websocket_api import ActiveConnection
 
     from .coordinator import RoomMindCoordinator
+    from .store import RoomMindStore
 
 
 def _get_coordinator(hass: HomeAssistant) -> RoomMindCoordinator | None:
@@ -121,6 +136,8 @@ _ROOM_SAVE_FIELDS = (
     "occupancy_eco_enabled",
     "occupancy_eco_delay",
     "preheat_enabled",
+    "price_shift",
+    "follow_device_setpoint",
     "climate_mode",
     "schedules",
     "schedule_selector_entity",
@@ -150,6 +167,7 @@ _ROOM_SAVE_FIELDS = (
     "covers_night_close_offset_minutes",
     "covers_night_position",
     "covers_snap_deploy",
+    "covers_window_hold",
     "cover_min_positions",
     "ignore_presence",
     "is_outdoor",
@@ -157,12 +175,44 @@ _ROOM_SAVE_FIELDS = (
     "heat_source_primary_delta",
     "heat_source_outdoor_threshold",
     "heat_source_ac_min_outdoor",
+    "heat_source_price_aware",
     "valve_protection_exclude",
     "climate_control_enabled",
+    "co2_sensor",
+    "co2_threshold",
+    "voc_sensor",
+    "voc_threshold",
+    "ventilation_entity",
+    "humidity_max",
+    "humidity_min",
+    "dehumidifier_entity",
+    "humidifier_entity",
+    "solar_sensor",
+    "room_fan_entity",
+    "room_fan_mode",
+    "ac_dry_enabled",
+)
+
+# Same limits as the room climate entity; also turns away nan/inf
+_TARGET_TEMP = vol.All(vol.Coerce(float), vol.Range(min=MIN_TARGET_TEMP, max=MAX_TARGET_TEMP))
+
+# What the dashboard card saves; the only room fields a non-admin may send
+_USER_ROOM_FIELDS = frozenset(
+    {
+        "comfort_temp",
+        "eco_temp",
+        "comfort_heat",
+        "comfort_cool",
+        "eco_heat",
+        "eco_cool",
+        "climate_mode",
+        "climate_control_enabled",
+    }
 )
 
 _SETTINGS_SAVE_FIELDS = (
     "outdoor_temp_sensor",
+    "price_entity",
     "outdoor_humidity_sensor",
     "outdoor_cooling_min",
     "outdoor_heating_max",
@@ -202,6 +252,7 @@ _SETTINGS_SAVE_FIELDS = (
     "mold_prevention_notify_targets",
     "room_order",
     "group_by_floor",
+    "floor_order",
     "compressor_groups",
 )
 
@@ -228,10 +279,63 @@ def _validate_no_own_entities(config: dict, own_prefix: str) -> str | None:
         eid = device.get("entity_id", "")
         if eid.split(".", 1)[-1].startswith(own_prefix):
             return f"Cannot assign RoomMind's own entity '{eid}' to a room"
-    for field in ("temperature_sensor", "humidity_sensor"):
+    for field in (
+        "temperature_sensor",
+        "humidity_sensor",
+        "co2_sensor",
+        "voc_sensor",
+        "ventilation_entity",
+        *_HUMIDITY_DEVICE_FIELDS,
+        "solar_sensor",
+        "room_fan_entity",
+    ):
         eid = config.get(field, "")
         if eid and eid.split(".", 1)[-1].startswith(own_prefix):
             return f"Cannot assign RoomMind's own entity '{eid}' to a room"
+    return None
+
+
+# Room field -> the humidifier device class that runs the other way and does not fit there
+_HUMIDITY_DEVICE_FIELDS = {"dehumidifier_entity": "humidifier", "humidifier_entity": "dehumidifier"}
+
+
+def _validate_humidity_control(
+    hass: HomeAssistant, area_id: str, room: dict, changed: dict, rooms: dict[str, dict]
+) -> tuple[str, str] | None:
+    """Check the merged room: limits apart by the gap, one role per entity, the right direction (#518).
+
+    Returns ``(error code, message)`` or None. Checked after the merge, because the auto-save sends
+    one field at a time. An entity keeps one role across all rooms: the ventilation, the
+    humidity devices and the room fans (#266) run on separate controllers, which must not fight
+    over one switch. The
+    device class is only checked for a field sent now, so a device that reports its class
+    later never blocks other saves of the room.
+    """
+    low, high = room.get("humidity_min"), room.get("humidity_max")
+    if low is not None and high is not None and high - low < HUMIDITY_LIMIT_GAP:
+        return (
+            websocket_api.ERR_INVALID_FORMAT,
+            f"The upper humidity limit must be at least {HUMIDITY_LIMIT_GAP} % above the lower one",
+        )
+    role_fields = ("ventilation_entity", *_HUMIDITY_DEVICE_FIELDS, "room_fan_entity")
+    roles = [room.get(f) for f in role_fields if room.get(f)]
+    if len(roles) != len(set(roles)):
+        return (
+            "invalid_entity",
+            "An entity can only be the ventilation, the dehumidifier, the humidifier or the room fan",
+        )
+    for other_id, other in rooms.items():
+        if other_id == area_id:
+            continue
+        for field in role_fields:
+            eid = room.get(field)
+            if eid and any(other.get(f) == eid for f in role_fields if f != field):
+                return "invalid_entity", f"'{eid}' has another role in another room"
+    for field, wrong_class in _HUMIDITY_DEVICE_FIELDS.items():
+        eid = changed.get(field) or ""
+        state = hass.states.get(eid) if eid.startswith("humidifier.") else None
+        if state is not None and state.attributes.get("device_class") == wrong_class:
+            return "invalid_entity", f"'{eid}' is a {wrong_class}"
     return None
 
 
@@ -257,7 +361,8 @@ async def websocket_list_rooms(
 ) -> None:
     """Return all rooms with current state."""
     store = hass.data[DOMAIN]["store"]
-    rooms = store.get_rooms()
+    stored = store.get_rooms()
+    rooms = rooms_with_area(hass, stored)
 
     # Merge live state from coordinator
     coordinator = _get_coordinator(hass)
@@ -271,6 +376,7 @@ async def websocket_list_rooms(
     outdoor_available = coordinator is not None and coordinator.outdoor_temp_effective is not None
     settings = store.get_settings()
     learning_disabled = set(settings.get("learning_disabled_rooms", []))
+    boost_anchors = settings.get("boost_applied_at", {})
 
     # Build response: config + live state per room
     # Override fields are computed from the store (always up-to-date) rather
@@ -279,15 +385,8 @@ async def websocket_list_rooms(
     for area_id, room_config in rooms.items():
         room_data = dict(room_config)
         live = live_states.get(area_id, {})
-        # Managed Mode rooms (no temperature_sensor) never train the EKF, so
-        # surfacing "learning paused" would be misleading.
-        has_external_sensor = bool(room_config.get("temperature_sensor"))
-        if (
-            not outdoor_available
-            and has_external_sensor
-            and area_id not in learning_disabled
-            and not room_config.get("is_outdoor", False)
-        ):
+        # Managed Mode rooms train too (on the device reading), only outdoor areas never do.
+        if not outdoor_available and area_id not in learning_disabled and not room_config.get("is_outdoor", False):
             learning_paused_reason: str | None = "outdoor_unavailable"
         else:
             learning_paused_reason = None
@@ -311,16 +410,34 @@ async def websocket_list_rooms(
             "mpc_active": live.get("mpc_active", False),
             "presence_away": live.get("presence_away", False),
             "occupancy_vacant": live.get("occupancy_vacant", False),
+            "co2": live.get("co2"),
+            "voc": live.get("voc"),
+            "air_quality_bad": live.get("air_quality_bad", False),
+            "air_quality_reason": live.get("air_quality_reason"),
+            "ventilation_active": live.get("ventilation_active", False),
+            "room_fan_active": live.get("room_fan_active", False),
+            "humidity_high": live.get("humidity_high", False),
+            "humidity_low": live.get("humidity_low", False),
+            "humidity_ventilate": live.get("humidity_ventilate", False),
+            "humidity_vent_blocked": live.get("humidity_vent_blocked", False),
+            "dehumidifier_active": live.get("dehumidifier_active", False),
+            "ac_dry_active": live.get("ac_dry_active", False),
+            "humidifier_active": live.get("humidifier_active", False),
+            # Sun sensor (#303): kind (irradiance/illuminance/percent) and learning/active/unavailable/unsupported
+            "solar_sensor": live.get("solar_sensor"),
             "mold_risk_level": live.get("mold_risk_level", "ok"),
             "mold_surface_rh": live.get("mold_surface_rh"),
             "mold_surface_temp": live.get("mold_surface_temp"),
             "mold_prevention_active": live.get("mold_prevention_active", False),
             "mold_prevention_delta": live.get("mold_prevention_delta", 0),
             "n_observations": live.get("n_observations", 0),
+            # A paused room does not fade the boost, so no countdown for it
+            "boost_applied_at": None if area_id in learning_disabled else boost_anchors.get(area_id),
             "blind_position": live.get("blind_position"),
             "cover_auto_paused": live.get("cover_auto_paused", False),
             "cover_override_until": live.get("cover_override_until"),
             "cover_forced_reason": live.get("cover_forced_reason", ""),
+            "cover_reason": live.get("cover_reason", ""),
             "active_cover_schedule_index": live.get("active_cover_schedule_index", -1),
             "active_heat_sources": live.get("active_heat_sources"),
             "learning_paused_reason": learning_paused_reason,
@@ -334,12 +451,19 @@ async def websocket_list_rooms(
             "climate_idle_power_w": live.get("climate_idle_power_w"),
             "compressor_protection_active": live.get("compressor_protection_active", False),
             "compressor_protection_reason": live.get("compressor_protection_reason"),
+            "uniform_group_mode": live.get("uniform_group_mode"),
             "compressor_protection_until": live.get("compressor_protection_until"),
             "coil_dry_active": live.get("coil_dry_active", False),
             "coil_dry_phase": live.get("coil_dry_phase"),
             "coil_dry_until": live.get("coil_dry_until"),
             "coil_dry_entities": live.get("coil_dry_entities", []),
             "schedule_temp_warnings": live.get("schedule_temp_warnings", []),
+            "price_level": live.get("price_level"),
+            "preheat": live.get("preheat"),
+            "setback": live.get("setback"),
+            "price_shift_heat": live.get("price_shift_heat", 0.0),
+            "price_shift_cool": live.get("price_shift_cool", 0.0),
+            "recent_temps": coordinator.recent_temps.get(area_id) if coordinator else [],
         }
         result[area_id] = room_data
 
@@ -351,6 +475,12 @@ async def websocket_list_rooms(
         msg["id"],
         {
             "rooms": result,
+            "rooms_without_area": [
+                {"area_id": area_id, "display_name": room.get("display_name", "")}
+                for area_id, room in rooms_without_area(hass, stored).items()
+            ],
+            # Countdowns in the browser compare against this, not against the device's own clock
+            "server_time": time.time(),
             "outdoor_temp": coordinator.outdoor_temp_effective if coordinator else None,
             "outdoor_humidity": coordinator.outdoor_humidity if coordinator else None,
             "vacation_active": vacation_active,
@@ -359,9 +489,13 @@ async def websocket_list_rooms(
             "hidden_rooms": settings.get("hidden_rooms", []),
             "room_order": settings.get("room_order", []),
             "group_by_floor": settings.get("group_by_floor", False),
+            "floor_order": settings.get("floor_order", []),
+            "ha_floor_order": ha_floor_order(hass),
             "control_mode": settings.get("control_mode", DEFAULT_CONTROL_MODE),
             "climate_control_active": settings.get("climate_control_active", True),
             "presence_enabled": settings.get("presence_enabled", False),
+            "price_entity": settings.get("price_entity", ""),
+            "price_status": coordinator.price_status() if coordinator else None,
             "presence_persons": settings.get("presence_persons", []),
             "presence_away_action": settings.get("presence_away_action", "eco"),
             "presence_clears_override": settings.get("presence_clears_override", False),
@@ -402,6 +536,8 @@ async def websocket_list_rooms(
                     vol.Optional("idle_action", default="off"): vol.In(["off", "fan_only", "setback", "low"]),
                     vol.Optional("idle_fan_mode", default="low"): str,
                     vol.Optional("active_fan_mode", default=""): str,
+                    # No default: devices without it keep their stored form (#255)
+                    vol.Optional("setback_auto_off"): bool,
                     vol.Optional("setpoint_mode", default="proportional"): vol.In(["proportional", "direct"]),
                     vol.Optional("regulation_offset", default=0.0): vol.All(
                         vol.Coerce(float), vol.Range(min=-5.0, max=5.0)
@@ -434,18 +570,20 @@ async def websocket_list_rooms(
             vol.Coerce(int), vol.Range(min=MIN_OCCUPANCY_ECO_DELAY_MINUTES, max=240)
         ),
         vol.Optional("preheat_enabled"): bool,
+        vol.Optional("price_shift"): vol.All(vol.Coerce(float), vol.Range(min=0, max=MAX_PRICE_SHIFT_K)),
+        vol.Optional("follow_device_setpoint"): bool,
         vol.Optional("climate_mode"): vol.In(CLIMATE_MODES),
         vol.Optional("schedules"): [{vol.Required("entity_id"): str}],
         vol.Optional("schedule_selector_entity"): str,
         vol.Optional("window_sensors"): [str],
         vol.Optional("window_open_delay"): vol.Coerce(int),
         vol.Optional("window_close_delay"): vol.Coerce(int),
-        vol.Optional("comfort_temp"): vol.Coerce(float),
-        vol.Optional("eco_temp"): vol.Coerce(float),
-        vol.Optional("comfort_heat"): vol.Coerce(float),
-        vol.Optional("comfort_cool"): vol.Coerce(float),
-        vol.Optional("eco_heat"): vol.Coerce(float),
-        vol.Optional("eco_cool"): vol.Coerce(float),
+        vol.Optional("comfort_temp"): _TARGET_TEMP,
+        vol.Optional("eco_temp"): _TARGET_TEMP,
+        vol.Optional("comfort_heat"): _TARGET_TEMP,
+        vol.Optional("comfort_cool"): _TARGET_TEMP,
+        vol.Optional("eco_heat"): _TARGET_TEMP,
+        vol.Optional("eco_cool"): _TARGET_TEMP,
         vol.Optional("presence_persons"): [str],
         vol.Optional("display_name"): str,
         vol.Optional("heating_system_type"): vol.In(["", "radiator", "underfloor"]),
@@ -468,6 +606,7 @@ async def websocket_list_rooms(
         vol.Optional("covers_night_close_offset_minutes"): vol.All(vol.Coerce(int), vol.Range(min=-120, max=120)),
         vol.Optional("covers_night_position"): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         vol.Optional("covers_snap_deploy"): bool,
+        vol.Optional("covers_window_hold"): bool,
         vol.Optional("cover_min_positions"): {str: vol.All(vol.Coerce(int), vol.Range(min=0, max=99))},
         vol.Optional("ignore_presence"): bool,
         vol.Optional("is_outdoor"): bool,
@@ -476,7 +615,36 @@ async def websocket_list_rooms(
         vol.Optional("heat_source_primary_delta"): vol.All(vol.Coerce(float), vol.Range(min=0.5, max=5.0)),
         vol.Optional("heat_source_outdoor_threshold"): vol.All(vol.Coerce(float), vol.Range(min=-20, max=25)),
         vol.Optional("heat_source_ac_min_outdoor"): vol.All(vol.Coerce(float), vol.Range(min=-30, max=5)),
+        vol.Optional("heat_source_price_aware"): bool,
         vol.Optional("climate_control_enabled"): bool,
+        vol.Optional("co2_sensor"): str,
+        vol.Optional("co2_threshold"): vol.All(
+            vol.Coerce(int), vol.Range(min=MIN_CO2_THRESHOLD, max=MAX_CO2_THRESHOLD)
+        ),
+        vol.Optional("voc_sensor"): str,
+        vol.Optional("solar_sensor"): str,
+        # In the sensor's own unit (index, ppb, µg/m³); None = the reading is shown, not judged
+        vol.Optional("voc_threshold"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0.001, max=1e6))),
+        vol.Optional("ventilation_entity"): vol.Any(
+            "", vol.All(str, vol.Match(rf"^({'|'.join(VENTILATION_DOMAINS)})\.[a-z0-9_]+$"))
+        ),
+        vol.Optional("humidity_max"): vol.Any(
+            None, vol.All(vol.Coerce(float), vol.Range(min=MIN_HUMIDITY_MAX, max=MAX_HUMIDITY_MAX))
+        ),
+        vol.Optional("humidity_min"): vol.Any(
+            None, vol.All(vol.Coerce(float), vol.Range(min=MIN_HUMIDITY_MIN, max=MAX_HUMIDITY_MIN))
+        ),
+        vol.Optional("dehumidifier_entity"): vol.Any(
+            "", vol.All(str, vol.Match(rf"^({'|'.join(HUMIDITY_DEVICE_DOMAINS)})\.[a-z0-9_]+$"))
+        ),
+        vol.Optional("humidifier_entity"): vol.Any(
+            "", vol.All(str, vol.Match(rf"^({'|'.join(HUMIDITY_DEVICE_DOMAINS)})\.[a-z0-9_]+$"))
+        ),
+        vol.Optional("room_fan_entity"): vol.Any(
+            "", vol.All(str, vol.Match(rf"^({'|'.join(VENTILATION_DOMAINS)})\.[a-z0-9_]+$"))
+        ),
+        vol.Optional("room_fan_mode"): vol.In(ROOM_FAN_MODES),
+        vol.Optional("ac_dry_enabled"): bool,
     }
 )
 @websocket_api.async_response
@@ -495,6 +663,12 @@ async def websocket_save_room(
         if key in msg:
             config[key] = msg[key]
 
+    # Non-admins (dashboard card) may change targets, mode and control of an existing room only
+    user = connection.user
+    if (user is None or not user.is_admin) and (store.get_room(area_id) is None or set(config) - _USER_ROOM_FIELDS):
+        connection.send_error(msg["id"], websocket_api.ERR_UNAUTHORIZED, "Only administrators can change this")
+        return
+
     # Reject RoomMind's own entities to prevent self-assignment (#86)
     own_prefix = f"{DOMAIN}_"
     err = _validate_no_own_entities(config, own_prefix)
@@ -505,6 +679,12 @@ async def websocket_save_room(
     err = _validate_no_duplicate_devices(config)
     if err:
         connection.send_error(msg["id"], "duplicate_entity", err)
+        return
+    humidity_err = _validate_humidity_control(
+        hass, area_id, {**(store.get_room(area_id) or {}), **config}, config, store.get_rooms()
+    )
+    if humidity_err:
+        connection.send_error(msg["id"], *humidity_err)
         return
 
     if ("thermostats" in config or "acs" in config) and "devices" not in config:
@@ -532,6 +712,8 @@ async def _async_release_dropped_valves(
     area_id: str,
     old: dict[str, ValveEntities],
     new: dict[str, ValveEntities],
+    *,
+    hand_back: bool = True,
 ) -> None:
     """Hand valves RoomMind no longer controls back to their TRVs (#413).
 
@@ -551,7 +733,7 @@ async def _async_release_dropped_valves(
                 valve.opening,
                 valve.closing,
                 area_id=area_id,
-                hand_back=True,
+                hand_back=hand_back,
                 idle_opening=valve.idle_opening,
             )
         except Exception:  # noqa: BLE001
@@ -563,6 +745,7 @@ async def _async_release_dropped_valves(
 # ---------------------------------------------------------------------------
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "roommind/rooms/delete",
@@ -576,24 +759,75 @@ async def websocket_delete_room(
     msg: dict,
 ) -> None:
     """Delete a room."""
-    store = hass.data[DOMAIN]["store"]
     area_id = msg["area_id"]
-
-    old_valves = get_valve_entities((store.get_room(area_id) or {}).get("devices", []))
-    try:
-        await store.async_delete_room(area_id)
-    except KeyError:
+    if not await async_remove_room(hass, area_id):
         connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
         return
+    connection.send_result(msg["id"], {"success": True})
 
-    await _async_release_dropped_valves(hass, area_id, old_valves, {})
 
-    # Notify coordinator to remove sensor entities for the deleted room
+async def _async_drop_boost_anchors(store: RoomMindStore, area_ids: list[str] | None = None) -> None:
+    """Forget the boost anchor with the model it counted on (None = every room)."""
+    anchors = store.get_settings().get("boost_applied_at", {})
+    if not anchors:
+        return
+    kept = {} if area_ids is None else {a: n for a, n in anchors.items() if a not in area_ids}
+    if kept != anchors:
+        await store.async_save_settings({"boost_applied_at": kept})
+
+
+async def _async_forget_in_room_lists(store: RoomMindStore, area_id: str) -> None:
+    """Drop a deleted room from the settings lists, else a new room in the same area inherits them."""
+    settings = store.get_settings()
+    changes = {
+        key: [a for a in settings[key] if a != area_id]
+        for key in ("hidden_rooms", "room_order", "learning_disabled_rooms")
+        if area_id in (settings.get(key) or [])
+    }
+    if changes:
+        await store.async_save_settings(changes)
+
+
+async def async_remove_room(hass: HomeAssistant, area_id: str) -> bool:
+    """Delete a room with its entities, valves, model and history; False if it is not stored."""
+    store = hass.data[DOMAIN]["store"]
+    room = store.get_room(area_id)
+    if room is None:
+        return False
     coordinator = _get_coordinator(hass)
+    switched_off = bool(coordinator and coordinator.note_room_deleted(area_id, room))
+    await store.async_delete_room(area_id)
+
+    # The room target as setpoint would let a TRV that is switched off next cycle heat on by itself
+    await _async_release_dropped_valves(
+        hass, area_id, get_valve_entities(room.get("devices", [])), {}, hand_back=not switched_off
+    )
+    await _async_forget_in_room_lists(store, area_id)
+
     if coordinator:
         await coordinator.async_room_removed(area_id)
+    # Stored right away, after the in-memory model is gone: else it only went with the next thermal save
+    await store.async_clear_thermal_data_room(area_id)
+    await _async_drop_boost_anchors(store, [area_id])
+    return True
 
-    connection.send_result(msg["id"], {"success": True})
+
+async def async_pause_room(hass: HomeAssistant, area_id: str) -> None:
+    """Stop running a room whose area was deleted, keeping what is stored for it (#494)."""
+    coordinator = _get_coordinator(hass)
+    if hass.data[DOMAIN]["store"].get_room(area_id) is not None and coordinator:
+        await coordinator.async_room_paused(area_id)
+
+
+async def async_resume_room(hass: HomeAssistant, area_id: str) -> None:
+    """Run a resting room again once an area with its id exists (#494)."""
+    store = hass.data[DOMAIN]["store"]
+    if store.get_room(area_id) is None:
+        return
+    await store.async_update_room(area_id, {REST_SWITCHED_OFF: False})
+    coordinator = _get_coordinator(hass)
+    if coordinator:
+        await coordinator.async_room_added(store.get_room(area_id))
 
 
 # ---------------------------------------------------------------------------
@@ -606,9 +840,11 @@ async def websocket_delete_room(
         vol.Required("type"): "roommind/override/set",
         vol.Required("area_id"): str,
         vol.Required("override_type"): vol.In(OVERRIDE_TYPES),
-        vol.Optional("heat"): vol.Coerce(float),
-        vol.Optional("cool"): vol.Coerce(float),
+        vol.Optional("heat"): _TARGET_TEMP,
+        vol.Optional("cool"): _TARGET_TEMP,
         vol.Optional("duration"): vol.Coerce(float),  # hours (omit or 0 for permanent)
+        # Until the active schedule's next block boundary; `duration` is the fallback without one
+        vol.Optional("until_schedule_change", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -644,6 +880,10 @@ async def websocket_override_set(
         return
 
     override_until = (time.time() + duration_hours * 3600) if duration_hours else None
+    if msg.get("until_schedule_change"):
+        next_change = next_schedule_change(hass, room)
+        if next_change is not None and next_change > time.time():
+            override_until = next_change
 
     await store.async_update_room(
         area_id,
@@ -729,10 +969,12 @@ async def websocket_get_settings(
 # ---------------------------------------------------------------------------
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "roommind/settings/save",
         vol.Optional("outdoor_temp_sensor"): str,
+        vol.Optional("price_entity"): str,
         vol.Optional("outdoor_humidity_sensor"): str,
         vol.Optional("outdoor_cooling_min"): vol.Coerce(float),
         vol.Optional("outdoor_heating_max"): vol.Coerce(float),
@@ -784,6 +1026,7 @@ async def websocket_get_settings(
         ],
         vol.Optional("room_order"): [str],
         vol.Optional("group_by_floor"): bool,
+        vol.Optional("floor_order"): [str],
         vol.Optional("compressor_groups"): [
             {
                 vol.Required("id"): str,
@@ -891,6 +1134,10 @@ async def websocket_save_settings(
 
     settings = await store.async_save_settings(changes)
     connection.send_result(msg["id"], {"settings": settings})
+    coordinator = _get_coordinator(hass)
+    if "climate_control_active" in changes and coordinator:
+        # Stop or resume control now, which also updates switch.roommind_climate_control (#291).
+        await coordinator.async_request_refresh()
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +1166,9 @@ async def websocket_get_analytics(
 ) -> None:
     """Return analytics data for a room."""
     store = hass.data[DOMAIN]["store"]
+    if store.get_room(msg["area_id"]) is None:
+        connection.send_error(msg["id"], "not_found", f"Room '{msg['area_id']}' not found")
+        return
     coordinator = _get_coordinator(hass)
     result = await build_analytics_data(
         hass,
@@ -937,6 +1187,7 @@ async def websocket_get_analytics(
 # ---------------------------------------------------------------------------
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "roommind/thermal/reset",
@@ -952,6 +1203,9 @@ async def websocket_thermal_reset(
     """Reset thermal model and history for a single room."""
     store = hass.data[DOMAIN]["store"]
     area_id = msg["area_id"]
+    if store.get_room(area_id) is None:
+        connection.send_error(msg["id"], "not_found", f"Room '{area_id}' not found")
+        return
     coordinator = _get_coordinator(hass)
 
     # Clear learned model and residual heat tracking
@@ -960,6 +1214,7 @@ async def websocket_thermal_reset(
 
     # Clear persisted thermal data
     await store.async_clear_thermal_data_room(area_id)
+    await _async_drop_boost_anchors(store, [area_id])
 
     # Clear history CSV files
     if coordinator and coordinator.history_store:
@@ -973,6 +1228,7 @@ async def websocket_thermal_reset(
 # ---------------------------------------------------------------------------
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "roommind/thermal/reset_all"})
 @websocket_api.async_response
 async def websocket_thermal_reset_all(
@@ -991,15 +1247,17 @@ async def websocket_thermal_reset_all(
 
     # Clear persisted thermal data
     await store.async_clear_all_thermal_data()
+    await _async_drop_boost_anchors(store)
 
-    # Clear history CSV files for all rooms
+    # Clear history CSV files for all rooms, also those without a model (outdoor areas)
     if coordinator and coordinator.history_store:
-        for area_id in room_ids:
+        for area_id in sorted(set(room_ids) | set(store.get_rooms())):
             await hass.async_add_executor_job(coordinator.history_store.remove_room, area_id)
 
     connection.send_result(msg["id"], {"success": True})
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "roommind/model/boost_learning",
@@ -1022,8 +1280,11 @@ async def websocket_boost_learning(
         return
 
     n_obs = coordinator.boost_learning(area_id)
+    if n_obs is None:
+        connection.send_error(msg["id"], "no_model", "Room has no learned model yet")
+        return
 
-    # Persist cooldown anchor in settings
+    # The frontend counts the fade from this anchor
     settings = store.get_settings()
     boost_applied = dict(settings.get("boost_applied_at", {}))
     boost_applied[area_id] = n_obs
@@ -1037,6 +1298,7 @@ async def websocket_boost_learning(
 # ---------------------------------------------------------------------------
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "roommind/diagnostics/get"})
 @websocket_api.async_response
 async def websocket_get_diagnostics(
